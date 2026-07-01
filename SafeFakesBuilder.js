@@ -23,7 +23,7 @@
   "use strict";
 
   const STORAGE_KEY = "SafeFakesBuilder.state";
-  const SAFE_FAKES_SCRIPT_URL = "https://bartoszwiszniewski.github.io/safe-fakes/SafeFakes.js";
+  const SAFE_FAKES_SCRIPT_URL = "https://cdn.jsdelivr.net/gh/BartoszWiszniewski/safe-fakes@main/SafeFakes.js";
   const BARBARIAN_PLAYER_ID = "0";
   const NO_ALLY_ID = "0";
   const PROTECTED_RELATIONS = new Set(["own", "same_ally", "partner", "nap", "friend", "non_attackable"]);

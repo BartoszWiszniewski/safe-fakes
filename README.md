@@ -6,7 +6,7 @@ Skrypt nie wysyla rozkazu automatycznie.
 
 ## Gotowy skrypt do paska
 
-Gotowy adres skryptu: `https://bartoszwiszniewski.github.io/safe-fakes/SafeFakes.js`.
+Gotowy adres skryptu: `https://cdn.jsdelivr.net/gh/BartoszWiszniewski/safe-fakes@main/SafeFakes.js`.
 
 ```js
 javascript:window.SafeFakes={
@@ -78,17 +78,17 @@ javascript:window.SafeFakes={
     "screen_redirect":"Przechodze na plac, do widoku wysylania rozkazu.",
     "village_out_of_group":"Wioska poza grupa. Przechodze do nastepnej wioski z grupy."
   }
-};$.getScript("https://bartoszwiszniewski.github.io/safe-fakes/SafeFakes.js");void 0;
+};$.getScript("https://cdn.jsdelivr.net/gh/BartoszWiszniewski/safe-fakes@main/SafeFakes.js");void 0;
 ```
 
 ## Kreator Konfiguracji Z Mapy
 
 Drugi skrypt sluzy tylko do zbudowania konfiguracji. Uruchom go na mapie, klikaj wioski i eksportuj gotowy bookmarklet dla `SafeFakes.js`.
 
-Gotowy adres buildera: `https://bartoszwiszniewski.github.io/safe-fakes/SafeFakesBuilder.js`.
+Gotowy adres buildera: `https://cdn.jsdelivr.net/gh/BartoszWiszniewski/safe-fakes@main/SafeFakesBuilder.js`.
 
 ```js
-javascript:$.getScript("https://bartoszwiszniewski.github.io/safe-fakes/SafeFakesBuilder.js");void 0;
+javascript:$.getScript("https://cdn.jsdelivr.net/gh/BartoszWiszniewski/safe-fakes@main/SafeFakesBuilder.js");void 0;
 ```
 
 Jak dziala:

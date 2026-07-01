@@ -122,3 +122,12 @@ test("buildBookmarklet serializes a ready SafeFakes loader", () => {
   assert.match(bookmarklet, /"target_weights":\{"players":\{\},"allies":\{\},"coords":\{"500\|501":3\}\}/);
   assert.match(bookmarklet, /\$\.getScript\("https:\/\/example\.test\/SafeFakes\.js"\);void 0;$/);
 });
+
+test("buildBookmarklet defaults to the public jsDelivr SafeFakes URL", () => {
+  const bookmarklet = buildBookmarklet(buildSafeFakesConfig(createBuilderState()));
+
+  assert.match(
+    bookmarklet,
+    /\$\.getScript\("https:\/\/cdn\.jsdelivr\.net\/gh\/BartoszWiszniewski\/safe-fakes@main\/SafeFakes\.js"\);void 0;$/,
+  );
+});
