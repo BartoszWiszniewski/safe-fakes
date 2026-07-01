@@ -110,9 +110,7 @@ Kolory na mapie:
 - niebieski - wioski pasujace do dodanego gracza albo plemienia
 - czerwony - reczne wykluczenia i chronione koordy/gracze/plemiona
 
-Builder oznacza na glownej mapie tylko widoczne wioski z `TWMap.villages`, przez `#map_village_ID` i kolorowy border, tak jak typowe skrypty mapowe oparte o `TWMap`. Dzieki temu przesuwanie mapy nie skanuje calego swiata.
-
-Jesli strona ma `#minimap_mover`, builder dorysowuje nad jego kontenerem lekki canvas z kolorami wybranych celow na minimapie. Ten canvas odswieza sie po zmianie list albo pobraniu danych mapy, nie przy kazdym przesunieciu glownej mapy.
+Builder oznacza na glownej mapie tylko widoczne wioski z `TWMap.villages`, przez `#map_village_ID` i kolorowy border, tak jak typowe skrypty mapowe oparte o `TWMap`. Dzieki temu przesuwanie mapy nie skanuje calego swiata i nie ma osobnego overlaya nad mapa.
 
 Builder zapisuje stan w `localStorage` pod `SafeFakesBuilder.state`, wiec mozna zamknac okno i wrocic do pracy pozniej. Sam builder niczego nie wysyla i nie wypelnia placu; robi tylko konfiguracje.
 

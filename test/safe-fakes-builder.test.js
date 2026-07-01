@@ -8,6 +8,7 @@ const {
   classifyVillage,
   getVillageSelectionState,
   getVillageMarkerType,
+  normalizeTwMapVillageEntry,
   removeStateItem,
   parseCoordKeys,
   searchWorldTargets,
@@ -160,6 +161,31 @@ test("live TWMap owner overrides stale world player data", () => {
 
   assert.equal(getVillageMarkerType(normalizeBuilderState({ player_ids: ["10"] }), staleVillage), null);
   assert.equal(getVillageMarkerType(normalizeBuilderState({ player_ids: ["99"] }), staleVillage), "group");
+});
+
+test("normalizeTwMapVillageEntry reads coords from TWMap numeric keys", () => {
+  const world = {
+    villagesByCoord: new Map([
+      ["480|491", {
+        id: "123",
+        x: 480,
+        y: 491,
+        playerId: "10",
+        player: { id: "10", name: "WorldOwner", allyId: "200" },
+        ally: { id: "200", name: "World Tribe", tag: "WRLD" },
+      }],
+    ]),
+  };
+
+  const village = normalizeTwMapVillageEntry("480491", { id: "123", owner: "11" }, world);
+
+  assert.equal(village.x, 480);
+  assert.equal(village.y, 491);
+  assert.equal(village.id, "123");
+  assert.equal(village.playerId, "11");
+  assert.equal(village.player.id, "11");
+  assert.equal(getVillageMarkerType(normalizeBuilderState({ player_ids: ["11"] }), village), "group");
+  assert.equal(getVillageMarkerType(normalizeBuilderState({ player_ids: ["10"] }), village), null);
 });
 
 test("removeStateItem removes list entries and matching weights", () => {

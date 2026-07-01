@@ -382,6 +382,24 @@
     };
   }
 
+  function normalizeTwMapVillageEntry(key, raw = {}, world = {}) {
+    const keyCoord = coordFromTwMapKey(key);
+    const mapSeed = Object.assign({}, keyCoord || {}, raw || {});
+    const mapVillage = normalizeVillage(mapSeed);
+    const worldVillage = Number.isFinite(mapVillage.x) && Number.isFinite(mapVillage.y) && world.villagesByCoord
+      ? world.villagesByCoord.get(coordKey(mapVillage))
+      : null;
+    return normalizeVillage(Object.assign({}, worldVillage || {}, mapSeed));
+  }
+
+  function coordFromTwMapKey(key) {
+    const text = String(key || "");
+    let match = /^(\d{1,3})\|(\d{1,3})$/.exec(text);
+    if (match) return { x: Number(match[1]), y: Number(match[2]) };
+    match = /^(\d{3})(\d{3})$/.exec(text);
+    return match ? { x: Number(match[1]), y: Number(match[2]) } : null;
+  }
+
   function normalizePlayer(raw = {}) {
     return {
       id: raw.id != null ? String(raw.id) : "",
@@ -579,9 +597,7 @@
     let exportText = null;
     let status = "Laduje dane mapy...";
     let highlightedElements = new Set();
-    let minimapCanvas = null;
     let mapRenderTimer = null;
-    let minimapRenderTimer = null;
     let searchQuery = "";
     let manualCoordsText = "";
     let originalOnClick = null;
@@ -605,7 +621,6 @@
     function stop() {
       restoreMap();
       clearHighlights();
-      clearMinimapHighlights();
       if (popup) popup.remove();
       if (panel) panel.remove();
       popup = null;
@@ -1310,7 +1325,6 @@
 
     function applyHighlights() {
       applyMapHighlights();
-      renderMinimapHighlights();
     }
 
     function scheduleHighlightsAfterMapChange() {
@@ -1320,18 +1334,11 @@
           applyMapHighlights();
         }, 0);
       }
-      if (minimapRenderTimer) root.clearTimeout(minimapRenderTimer);
-      minimapRenderTimer = root.setTimeout(() => {
-        minimapRenderTimer = null;
-        renderMinimapHighlights();
-      }, 120);
     }
 
     function clearRenderTimers() {
       if (mapRenderTimer) root.clearTimeout(mapRenderTimer);
-      if (minimapRenderTimer) root.clearTimeout(minimapRenderTimer);
       mapRenderTimer = null;
-      minimapRenderTimer = null;
     }
 
     function applyMapHighlights() {
@@ -1356,79 +1363,15 @@
       return markers;
     }
 
-    function collectAllMarkedVillages() {
-      const markers = new Map();
-      for (const village of world.villagesByCoord.values()) {
-        const type = getVillageMarkerType(state, village);
-        if (type) markers.set(coordKey(village), { type, village });
-      }
-      for (const key of state.coords) {
-        if (!markers.has(key) || markers.get(key).type !== "exclude") markers.set(key, { type: "coord", village: world.villagesByCoord.get(key) || villageFromCoordKey(key) });
-      }
-      for (const key of state.exclude_coords) {
-        markers.set(key, { type: "exclude", village: world.villagesByCoord.get(key) || villageFromCoordKey(key) });
-      }
-      return markers;
-    }
-
     function getVisibleVillages() {
       const result = new Map();
       const villages = root.TWMap && root.TWMap.villages;
       if (!villages) return result;
-      for (const value of Object.values(villages)) {
-        const mapVillage = normalizeVillage(value || {});
-        const worldVillage = Number.isFinite(mapVillage.x) && Number.isFinite(mapVillage.y)
-          ? world.villagesByCoord.get(coordKey(mapVillage))
-          : null;
-        const village = enrichVillage(Object.assign({}, worldVillage || {}, value || {}));
+      for (const [key, value] of Object.entries(villages)) {
+        const village = enrichVillage(normalizeTwMapVillageEntry(key, value, world));
         if (Number.isFinite(village.x) && Number.isFinite(village.y)) result.set(coordKey(village), village);
       }
       return result;
-    }
-
-    function renderMinimapHighlights() {
-      clearMinimapHighlights();
-      const mover = documentRef.querySelector("#minimap_mover");
-      if (!mover || !world.villagesByCoord.size) return;
-
-      const width = mover.clientWidth || (mover.parentElement && mover.parentElement.clientWidth);
-      const height = mover.clientHeight || (mover.parentElement && mover.parentElement.clientHeight);
-      if (!width || !height) return;
-
-      if (root.getComputedStyle && root.getComputedStyle(mover).position === "static") {
-        mover.style.position = "relative";
-      }
-
-      minimapCanvas = documentRef.createElement("canvas");
-      minimapCanvas.id = "safe-fakes-builder-minimap";
-      minimapCanvas.width = width;
-      minimapCanvas.height = height;
-      minimapCanvas.style.cssText = "position:absolute;left:0;top:0;width:100%;height:100%;z-index:1;pointer-events:none;";
-      mover.appendChild(minimapCanvas);
-
-      const context = minimapCanvas.getContext("2d");
-      if (!context) return;
-      const current = root.game_data && root.game_data.village;
-      const markers = collectAllMarkedVillages();
-      for (const [key, marker] of markers) {
-        const coord = villageFromCoordKey(key);
-        if (!coord || !isOnCurrentMinimap(coord, current)) continue;
-        const x = ((coord.x % 100) / 100) * width;
-        const y = ((coord.y % 100) / 100) * height;
-        context.fillStyle = COLORS[marker.type];
-        context.fillRect(Math.max(0, x - 2), Math.max(0, y - 2), 4, 4);
-      }
-    }
-
-    function isOnCurrentMinimap(coord, current) {
-      if (!current) return true;
-      return Math.floor(Number(current.x) / 100) === Math.floor(Number(coord.x) / 100) &&
-        Math.floor(Number(current.y) / 100) === Math.floor(Number(coord.y) / 100);
-    }
-
-    function clearMinimapHighlights() {
-      if (minimapCanvas) minimapCanvas.remove();
-      minimapCanvas = null;
     }
 
     function highlightCoord(key, type, fallbackVillage) {
@@ -1444,17 +1387,14 @@
     function highlightVillage(village, type) {
       const element = getMapVillageElement(village);
       if (!element) return;
-      element.style.outline = `5px solid ${COLORS[type]}`;
-      element.style.outlineOffset = "-5px";
-      element.style.boxShadow = "0 0 0 1px rgba(0,0,0,.75)";
+      element.style.boxSizing = "border-box";
+      element.style.border = `5px solid ${COLORS[type]}`;
       highlightedElements.add(element);
     }
 
     function clearHighlights() {
       for (const element of highlightedElements) {
-        element.style.outline = "";
-        element.style.outlineOffset = "";
-        element.style.boxShadow = "";
+        element.style.border = "none";
       }
       highlightedElements = new Set();
     }
@@ -1563,6 +1503,7 @@
     classifyVillage,
     getVillageSelectionState,
     getVillageMarkerType,
+    normalizeTwMapVillageEntry,
     removeStateItem,
     parseCoordKeys,
     searchWorldTargets,
