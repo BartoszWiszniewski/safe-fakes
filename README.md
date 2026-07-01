@@ -81,6 +81,35 @@ javascript:window.SafeFakes={
 };$.getScript("https://bartoszwiszniewski.github.io/safe-fakes/SafeFakes.js");void 0;
 ```
 
+## Kreator Konfiguracji Z Mapy
+
+Drugi skrypt sluzy tylko do zbudowania konfiguracji. Uruchom go na mapie, klikaj wioski i eksportuj gotowy bookmarklet dla `SafeFakes.js`.
+
+Gotowy adres buildera: `https://bartoszwiszniewski.github.io/safe-fakes/SafeFakesBuilder.js`.
+
+```js
+javascript:$.getScript("https://bartoszwiszniewski.github.io/safe-fakes/SafeFakesBuilder.js");void 0;
+```
+
+Jak dziala:
+
+- wejdz na mape i odpal bookmarklet buildera
+- kliknij wioske na mapie
+- popup pokaze wlasciciela, plemie, punkty i relacje
+- wybierz `Cel: koord`, `Cel: gracz`, `Cel: plemie` albo `Chron koord/gracza/plemie`
+- chronione relacje (`twoja wioska`, `twoje plemie`, `sojusznik`, `pakt NAP`, `znajomy`, `nieatakowalny`) nie maja aktywnych przyciskow dodania do celow
+- panel po prawej pokazuje liczby, minimalne/maksymalne punkty, sposob losowania i eksport
+- `Bookmarklet` generuje gotowy kod do paska zakladek
+- `Config` generuje samo `window.SafeFakes = {...};`
+
+Kolory na mapie:
+
+- zielony - konkretne koordy dodane jako cel
+- niebieski - wioski pasujace do dodanego gracza albo plemienia
+- czerwony - reczne wykluczenia i chronione koordy/gracze/plemiona
+
+Builder zapisuje stan w `localStorage` pod `SafeFakesBuilder.state`, wiec mozna zamknac okno i wrocic do pracy pozniej. Sam builder niczego nie wysyla i nie wypelnia placu; robi tylko konfiguracje.
+
 ## Pelna konfiguracja
 
 Ten sam przyklad w czytelniejszej formie:
