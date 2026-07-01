@@ -88,7 +88,7 @@ Drugi skrypt sluzy tylko do zbudowania konfiguracji. Uruchom go na mapie, klikaj
 Gotowy adres buildera: `https://cdn.jsdelivr.net/gh/BartoszWiszniewski/safe-fakes@main/SafeFakesBuilder.js`.
 
 ```js
-javascript:$.getScript("https://cdn.jsdelivr.net/gh/BartoszWiszniewski/safe-fakes@main/SafeFakesBuilder.js?_="+~~(Date.now()/9e6));void 0;
+javascript:$.getScript("https://cdn.jsdelivr.net/gh/BartoszWiszniewski/safe-fakes@main/SafeFakesBuilder.js");void 0;
 ```
 
 Jak dziala:
