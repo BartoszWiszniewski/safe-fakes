@@ -9,6 +9,8 @@ const {
   getVillageSelectionState,
   getVillageMarkerType,
   removeStateItem,
+  parseCoordKeys,
+  searchWorldTargets,
   buildSafeFakesConfig,
   buildBookmarklet,
 } = require("../SafeFakesBuilder");
@@ -150,6 +152,33 @@ test("removeStateItem removes list entries and matching weights", () => {
   assert.deepEqual(withoutPlayer.player_ids, []);
   assert.deepEqual(withoutPlayer.target_weights.coords, {});
   assert.deepEqual(withoutPlayer.target_weights.players, {});
+});
+
+test("parseCoordKeys extracts unique manual coords", () => {
+  assert.deepEqual(parseCoordKeys("500|501, (502|503) 500|501 bad"), ["500|501", "502|503"]);
+});
+
+test("searchWorldTargets finds players and tribes by partial name, tag, or id", () => {
+  const world = {
+    playersById: new Map([
+      ["10", { id: "10", name: "EnemyNick", allyId: "200" }],
+      ["11", { id: "11", name: "Other", allyId: "201" }],
+    ]),
+    alliesById: new Map([
+      ["200", { id: "200", name: "Enemy Main", tag: "ENM" }],
+      ["201", { id: "201", name: "Enemy Academy", tag: "ENM-A" }],
+      ["300", { id: "300", name: "Neutral", tag: "NTR" }],
+    ]),
+  };
+
+  const byName = searchWorldTargets(world, "enemy", 10);
+  const byTag = searchWorldTargets(world, "enm", 10);
+  const byId = searchWorldTargets(world, "201", 10);
+
+  assert.deepEqual(byName.players.map((player) => player.id), ["10"]);
+  assert.deepEqual(byName.allies.map((ally) => ally.id), ["200", "201"]);
+  assert.deepEqual(byTag.allies.map((ally) => ally.id), ["200", "201"]);
+  assert.deepEqual(byId.allies.map((ally) => ally.id), ["201"]);
 });
 
 test("classifyVillage marks protected relations before generic targets", () => {

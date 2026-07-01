@@ -164,6 +164,16 @@
     return match ? `${Number(match[1])}|${Number(match[2])}` : "";
   }
 
+  function parseCoordKeys(text) {
+    const keys = [];
+    const regex = /(\d{1,3})\|(\d{1,3})/g;
+    let match;
+    while ((match = regex.exec(String(text || ""))) !== null) {
+      keys.push(`${Number(match[1])}|${Number(match[2])}`);
+    }
+    return uniqueList(keys);
+  }
+
   function coordKey(village) {
     return `${Number(village.x)}|${Number(village.y)}`;
   }
@@ -259,6 +269,27 @@
     }
 
     return normalizeBuilderState(state);
+  }
+
+  function searchWorldTargets(world, query, limit = 20) {
+    const needle = String(query || "").trim().toLowerCase();
+    if (needle.length < 2) return { players: [], allies: [], coords: parseCoordKeys(query) };
+
+    const players = [];
+    const allies = [];
+    for (const player of world.playersById ? world.playersById.values() : []) {
+      if (matchesSearch(player, needle, ["id", "name"])) players.push(player);
+      if (players.length >= limit) break;
+    }
+    for (const ally of world.alliesById ? world.alliesById.values() : []) {
+      if (matchesSearch(ally, needle, ["id", "name", "tag"])) allies.push(ally);
+      if (allies.length >= limit) break;
+    }
+    return { players, allies, coords: parseCoordKeys(query) };
+  }
+
+  function matchesSearch(item, needle, keys) {
+    return keys.some((key) => String(item[key] || "").toLowerCase().includes(needle));
   }
 
   function addPlayerTarget(state, village, excluded) {
@@ -533,6 +564,9 @@
     let exportText = null;
     let status = "Laduje dane mapy...";
     let highlightedElements = new Set();
+    let minimapCanvas = null;
+    let searchQuery = "";
+    let manualCoordsText = "";
     let originalOnClick = null;
     let originalSpawnSector = null;
     let spawnHost = null;
@@ -555,6 +589,7 @@
     function stop() {
       restoreMap();
       clearHighlights();
+      clearMinimapHighlights();
       if (popup) popup.remove();
       if (panel) panel.remove();
       popup = null;
@@ -619,7 +654,7 @@
         spawnHost.__safeFakesBuilderSpawnSector = originalSpawnSector;
         spawnHost.spawnSector = function safeFakesBuilderSpawnSector() {
           const result = originalSpawnSector.apply(this, arguments);
-          root.setTimeout(applyHighlights, 0);
+          root.setTimeout(applyMapHighlights, 0);
           return result;
         };
       }
@@ -827,6 +862,7 @@
       panel.appendChild(createCounts());
       panel.appendChild(createOptions());
       panel.appendChild(createLegend());
+      panel.appendChild(createManualControls());
       panel.appendChild(createSelectionLists());
       panel.appendChild(createExportControls());
     }
@@ -919,6 +955,142 @@
         legend.appendChild(item);
       }
       return legend;
+    }
+
+    function createManualControls() {
+      const details = documentRef.createElement("details");
+      details.className = "sfb-details";
+      const summary = documentRef.createElement("summary");
+      summary.textContent = "Dodaj recznie";
+      details.appendChild(summary);
+
+      const wrap = documentRef.createElement("div");
+      wrap.className = "sfb-manual";
+      const searchInput = documentRef.createElement("input");
+      searchInput.type = "search";
+      searchInput.placeholder = "gracz, plemie, tag, ID";
+      searchInput.value = searchQuery;
+      searchInput.addEventListener("input", () => {
+        searchQuery = searchInput.value;
+      });
+      const searchButton = createPanelButton("Szukaj", () => {
+        searchQuery = searchInput.value;
+        renderPanel();
+      });
+      wrap.appendChild(searchInput);
+      wrap.appendChild(searchButton);
+      wrap.appendChild(createSearchResults());
+
+      const coords = documentRef.createElement("textarea");
+      coords.placeholder = "500|500 501|501";
+      coords.value = manualCoordsText;
+      coords.addEventListener("input", () => {
+        manualCoordsText = coords.value;
+      });
+      wrap.appendChild(coords);
+
+      const coordActions = documentRef.createElement("div");
+      coordActions.className = "sfb-actions";
+      coordActions.appendChild(createPanelButton("Dodaj koordy", () => addManualCoords("coords")));
+      coordActions.appendChild(createPanelButton("Chron koordy", () => addManualCoords("exclude_coords")));
+      wrap.appendChild(coordActions);
+
+      details.appendChild(wrap);
+      return details;
+    }
+
+    function createSearchResults() {
+      const results = searchWorldTargets(world, searchQuery, 20);
+      const box = documentRef.createElement("div");
+      box.className = "sfb-search-results";
+      if (!searchQuery.trim()) return box;
+
+      if (results.coords.length) {
+        box.appendChild(createSearchRow(`koordy: ${results.coords.join(" ")}`, [
+          ["Cel", () => updateState(addCoords(state, results.coords, false))],
+          ["Chron", () => updateState(addCoords(state, results.coords, true))],
+        ]));
+      }
+
+      if (results.allies.length > 1) {
+        box.appendChild(createSearchRow(`plemiona z wynikow: ${results.allies.length}`, [
+          ["Cel wszystkie", () => updateState(addAllies(state, results.allies, false))],
+          ["Chron wszystkie", () => updateState(addAllies(state, results.allies, true))],
+        ]));
+      }
+
+      for (const ally of results.allies) {
+        const label = `plemie ${ally.tag || ally.name} #${ally.id}`;
+        box.appendChild(createSearchRow(label, [
+          ["Cel", () => updateState(addAllies(state, [ally], false))],
+          ["Chron", () => updateState(addAllies(state, [ally], true))],
+        ]));
+      }
+
+      for (const player of results.players) {
+        const label = `gracz ${player.name} #${player.id}`;
+        box.appendChild(createSearchRow(label, [
+          ["Cel", () => updateState(addPlayer(state, player, false))],
+          ["Chron", () => updateState(addPlayer(state, player, true))],
+        ]));
+      }
+
+      if (!box.children.length) {
+        const empty = documentRef.createElement("div");
+        empty.className = "sfb-list-empty";
+        empty.textContent = "brak wynikow";
+        box.appendChild(empty);
+      }
+
+      return box;
+    }
+
+    function createSearchRow(label, actions) {
+      const row = documentRef.createElement("div");
+      row.className = "sfb-search-row";
+      const text = documentRef.createElement("span");
+      text.textContent = label;
+      row.appendChild(text);
+      for (const [buttonLabel, onClick] of actions) row.appendChild(createPanelButton(buttonLabel, onClick));
+      return row;
+    }
+
+    function addManualCoords(key) {
+      const coords = parseCoordKeys(manualCoordsText);
+      if (coords.length) updateState(addCoords(state, coords, key === "exclude_coords"));
+    }
+
+    function addCoords(rawState, coords, excluded) {
+      let next = rawState;
+      for (const key of coords) {
+        const coord = villageFromCoordKey(key);
+        if (coord) next = applyVillageAction(next, coord, excluded ? "exclude_coord" : "add_coord");
+      }
+      return next;
+    }
+
+    function addPlayer(rawState, player, excluded) {
+      return applyVillageAction(rawState, {
+        x: 0,
+        y: 0,
+        playerId: player.id,
+        player,
+        ally: world.alliesById.get(String(player.allyId)) || null,
+      }, excluded ? "exclude_player" : "add_player");
+    }
+
+    function addAllies(rawState, allies, excluded) {
+      let next = rawState;
+      for (const ally of allies) {
+        next = applyVillageAction(next, {
+          x: 0,
+          y: 0,
+          playerId: "",
+          player: { id: "", name: "", allyId: ally.id },
+          ally,
+        }, excluded ? "exclude_ally" : "add_ally");
+      }
+      return next;
     }
 
     function createSelectionLists() {
@@ -1115,21 +1287,40 @@
     }
 
     function applyHighlights() {
+      applyMapHighlights();
+      renderMinimapHighlights();
+    }
+
+    function applyMapHighlights() {
       clearHighlights();
-      const markers = collectMarkedVillages();
+      const markers = collectVisibleMarkedVillages();
       for (const [key, marker] of markers) highlightCoord(key, marker.type, marker.village);
     }
 
-    function collectMarkedVillages() {
+    function collectVisibleMarkedVillages() {
       const markers = new Map();
-      for (const village of getKnownVillages().values()) {
+      const visible = getVisibleVillages();
+      for (const village of visible.values()) {
         const type = getVillageMarkerType(state, village);
         if (type) markers.set(coordKey(village), { type, village });
       }
       for (const key of state.coords) {
-        if (!markers.has(key) || markers.get(key).type !== "exclude") {
-          markers.set(key, { type: "coord", village: world.villagesByCoord.get(key) || villageFromCoordKey(key) });
-        }
+        if (visible.has(key) && (!markers.has(key) || markers.get(key).type !== "exclude")) markers.set(key, { type: "coord", village: visible.get(key) });
+      }
+      for (const key of state.exclude_coords) {
+        if (visible.has(key)) markers.set(key, { type: "exclude", village: visible.get(key) });
+      }
+      return markers;
+    }
+
+    function collectAllMarkedVillages() {
+      const markers = new Map();
+      for (const village of world.villagesByCoord.values()) {
+        const type = getVillageMarkerType(state, village);
+        if (type) markers.set(coordKey(village), { type, village });
+      }
+      for (const key of state.coords) {
+        if (!markers.has(key) || markers.get(key).type !== "exclude") markers.set(key, { type: "coord", village: world.villagesByCoord.get(key) || villageFromCoordKey(key) });
       }
       for (const key of state.exclude_coords) {
         markers.set(key, { type: "exclude", village: world.villagesByCoord.get(key) || villageFromCoordKey(key) });
@@ -1137,8 +1328,8 @@
       return markers;
     }
 
-    function getKnownVillages() {
-      const result = new Map(world.villagesByCoord);
+    function getVisibleVillages() {
+      const result = new Map();
       const villages = root.TWMap && root.TWMap.villages;
       if (!villages) return result;
       for (const value of Object.values(villages)) {
@@ -1146,6 +1337,52 @@
         if (Number.isFinite(village.x) && Number.isFinite(village.y)) result.set(coordKey(village), village);
       }
       return result;
+    }
+
+    function renderMinimapHighlights() {
+      clearMinimapHighlights();
+      const mover = documentRef.querySelector("#minimap_mover");
+      const container = mover && mover.parentElement;
+      if (!container || !world.villagesByCoord.size) return;
+
+      const width = container.clientWidth || mover.clientWidth;
+      const height = container.clientHeight || mover.clientHeight;
+      if (!width || !height) return;
+
+      if (root.getComputedStyle && root.getComputedStyle(container).position === "static") {
+        container.style.position = "relative";
+      }
+
+      minimapCanvas = documentRef.createElement("canvas");
+      minimapCanvas.id = "safe-fakes-builder-minimap";
+      minimapCanvas.width = width;
+      minimapCanvas.height = height;
+      minimapCanvas.style.cssText = "position:absolute;left:0;top:0;width:100%;height:100%;z-index:13;pointer-events:none;";
+      container.appendChild(minimapCanvas);
+
+      const context = minimapCanvas.getContext("2d");
+      if (!context) return;
+      const current = root.game_data && root.game_data.village;
+      const markers = collectAllMarkedVillages();
+      for (const [key, marker] of markers) {
+        const coord = villageFromCoordKey(key);
+        if (!coord || !isOnCurrentMinimap(coord, current)) continue;
+        const x = ((coord.x % 100) / 100) * width;
+        const y = ((coord.y % 100) / 100) * height;
+        context.fillStyle = COLORS[marker.type];
+        context.fillRect(Math.max(0, x - 2), Math.max(0, y - 2), 4, 4);
+      }
+    }
+
+    function isOnCurrentMinimap(coord, current) {
+      if (!current) return true;
+      return Math.floor(Number(current.x) / 100) === Math.floor(Number(coord.x) / 100) &&
+        Math.floor(Number(current.y) / 100) === Math.floor(Number(coord.y) / 100);
+    }
+
+    function clearMinimapHighlights() {
+      if (minimapCanvas) minimapCanvas.remove();
+      minimapCanvas = null;
     }
 
     function highlightCoord(key, type, fallbackVillage) {
@@ -1201,6 +1438,12 @@
 .sfb-legend{display:flex;gap:8px;margin-bottom:8px;flex-wrap:wrap;color:#d1d5db}
 .sfb-legend span{display:inline-flex;align-items:center;gap:4px}
 .sfb-legend i{width:10px;height:10px;display:inline-block;border:1px solid rgba(255,255,255,.45)}
+.sfb-manual{display:grid;grid-template-columns:1fr auto;gap:6px;padding:0 6px 6px}
+.sfb-manual input,.sfb-manual textarea{background:#0f172a;color:#f9fafb;border:1px solid #4b5563;border-radius:4px;box-sizing:border-box;width:100%;font:12px Arial,sans-serif}
+.sfb-manual textarea{grid-column:1 / -1;height:54px;resize:vertical}
+.sfb-search-results{grid-column:1 / -1;display:grid;gap:4px}
+.sfb-search-row{display:grid;grid-template-columns:1fr auto auto;gap:4px;align-items:center;background:#0f172a;border:1px solid #243044;border-radius:5px;padding:4px}
+.sfb-search-row span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .sfb-lists{display:grid;gap:6px;margin-bottom:8px}
 .sfb-details{border:1px solid #243044;border-radius:5px;background:#0b1220}
 .sfb-details summary{cursor:pointer;padding:6px 7px;font-weight:700}
@@ -1270,6 +1513,8 @@
     getVillageSelectionState,
     getVillageMarkerType,
     removeStateItem,
+    parseCoordKeys,
+    searchWorldTargets,
     setTargetWeight,
     buildSafeFakesConfig,
     buildBookmarklet,
