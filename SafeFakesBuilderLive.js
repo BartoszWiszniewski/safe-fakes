@@ -1,0 +1,1517 @@
+/* MIT License
+ * SafeFakesBuilder - map configurator for SafeFakes.
+ */
+(function (root, factory) {
+  const api = factory(root);
+
+  if (typeof module === "object" && module.exports) {
+    module.exports = api;
+  }
+
+  if (root) {
+    root.SafeFakesBuilder = api;
+  }
+
+  if (
+    root &&
+    root.document &&
+    !root.__SAFE_FAKES_BUILDER_NO_AUTOSTART__
+  ) {
+    api.run().catch(api.showError);
+  }
+})(typeof window !== "undefined" ? window : globalThis, function (root) {
+  "use strict";
+
+  const STORAGE_KEY = "SafeFakesBuilder.state";
+  const SAFE_FAKES_SCRIPT_URL = "https://cdn.jsdelivr.net/gh/BartoszWiszniewski/safe-fakes/SafeFakes.js";
+  const BARBARIAN_PLAYER_ID = "0";
+  const NO_ALLY_ID = "0";
+  const PROTECTED_RELATIONS = new Set(["own", "same_ally", "partner", "nap", "friend", "non_attackable"]);
+  const LIST_KEYS = [
+    "coords",
+    "players",
+    "player_ids",
+    "allies",
+    "ally_tags",
+    "ally_ids",
+    "exclude_coords",
+    "exclude_players",
+    "exclude_player_ids",
+    "exclude_allies",
+    "exclude_ally_tags",
+    "exclude_ally_ids",
+  ];
+  const COLORS = {
+    coord: "#22c55e",
+    group: "#3b82f6",
+    exclude: "#ef4444",
+  };
+  const RELATION_LABELS = {
+    own: "twoja wioska",
+    same_ally: "twoje plemie",
+    partner: "sojusznik",
+    nap: "pakt NAP",
+    friend: "znajomy",
+    non_attackable: "nieatakowalny",
+    barbarian: "barbarzynska",
+    enemy: "mozliwy cel",
+    neutral: "bez plemienia",
+    missing_player: "brak danych gracza",
+  };
+  const DEFAULT_STATE = {
+    coords: [],
+    players: [],
+    player_ids: [],
+    allies: [],
+    ally_tags: [],
+    ally_ids: [],
+    exclude_coords: [],
+    exclude_players: [],
+    exclude_player_ids: [],
+    exclude_allies: [],
+    exclude_ally_tags: [],
+    exclude_ally_ids: [],
+    include_barbarians: false,
+    min_points: 0,
+    max_points: 0,
+    random_target: true,
+    random_target_by: "village",
+    target_weights: {
+      players: {},
+      allies: {},
+      coords: {},
+    },
+  };
+
+  function createBuilderState() {
+    return normalizeBuilderState({});
+  }
+
+  function normalizeBuilderState(raw = {}) {
+    const state = Object.assign({}, DEFAULT_STATE, raw || {});
+    for (const key of LIST_KEYS) {
+      const values = key.endsWith("coords") || key === "coords" || key.endsWith("_ids")
+        ? splitLooseList(state[key])
+        : splitNamedList(state[key]);
+      state[key] = uniqueList(key.endsWith("coords") || key === "coords"
+        ? values.map(normalizeCoordKey).filter(Boolean)
+        : values);
+    }
+
+    state.include_barbarians = asBoolean(state.include_barbarians, DEFAULT_STATE.include_barbarians);
+    state.min_points = asNumber(state.min_points, DEFAULT_STATE.min_points);
+    state.max_points = asNumber(state.max_points, DEFAULT_STATE.max_points);
+    state.random_target = asBoolean(state.random_target, DEFAULT_STATE.random_target);
+    state.random_target_by = ["village", "player", "ally"].includes(state.random_target_by)
+      ? state.random_target_by
+      : DEFAULT_STATE.random_target_by;
+    state.target_weights = normalizeWeights(state.target_weights);
+
+    return state;
+  }
+
+  function normalizeWeights(value) {
+    const source = value && typeof value === "object" ? value : {};
+    return {
+      players: normalizeWeightTable(source.players),
+      allies: normalizeWeightTable(source.allies),
+      coords: normalizeWeightTable(source.coords),
+    };
+  }
+
+  function normalizeWeightTable(value) {
+    const result = {};
+    if (!value || typeof value !== "object") return result;
+    for (const [key, weight] of Object.entries(value)) {
+      const normalizedWeight = Number(weight);
+      if (key && Number.isFinite(normalizedWeight) && normalizedWeight > 1) {
+        result[String(key)] = normalizedWeight;
+      }
+    }
+    return result;
+  }
+
+  function asBoolean(value, defaultValue) {
+    if (typeof value === "boolean") return value;
+    if (typeof value === "string") return value.trim().toLowerCase() === "true";
+    return defaultValue;
+  }
+
+  function asNumber(value, defaultValue) {
+    const number = Number(value);
+    return Number.isFinite(number) ? number : defaultValue;
+  }
+
+  function splitLooseList(value) {
+    if (Array.isArray(value)) return value.map(String).map((item) => item.trim()).filter(Boolean);
+    return String(value || "").split(/[,;\s]+/).map((item) => item.trim()).filter(Boolean);
+  }
+
+  function splitNamedList(value) {
+    if (Array.isArray(value)) return value.map(String).map((item) => item.trim()).filter(Boolean);
+    return String(value || "").split(/[,;]+/).map((item) => item.trim()).filter(Boolean);
+  }
+
+  function uniqueList(values) {
+    return Array.from(new Set(values.map(String).map((item) => item.trim()).filter(Boolean)));
+  }
+
+  function normalizeCoordKey(value) {
+    if (value && typeof value === "object" && value.x != null && value.y != null) {
+      return coordKey(value);
+    }
+    const match = /(\d{1,3})\|(\d{1,3})/.exec(String(value || ""));
+    return match ? `${Number(match[1])}|${Number(match[2])}` : "";
+  }
+
+  function parseCoordKeys(text) {
+    const keys = [];
+    const regex = /(\d{1,3})\|(\d{1,3})/g;
+    let match;
+    while ((match = regex.exec(String(text || ""))) !== null) {
+      keys.push(`${Number(match[1])}|${Number(match[2])}`);
+    }
+    return uniqueList(keys);
+  }
+
+  function coordKey(village) {
+    return `${Number(village.x)}|${Number(village.y)}`;
+  }
+
+  function addUnique(values, value) {
+    if (!value) return uniqueList(values);
+    return uniqueList([].concat(values || [], [String(value)]));
+  }
+
+  function removeValue(values, value) {
+    const key = String(value || "");
+    return uniqueList(values).filter((item) => item !== key);
+  }
+
+  function listHas(values, value) {
+    const key = String(value || "");
+    return uniqueList(values).includes(key);
+  }
+
+  function applyVillageAction(rawState, rawVillage, action) {
+    const state = normalizeBuilderState(rawState);
+    const village = normalizeVillage(rawVillage);
+    const key = coordKey(village);
+
+    if (action === "add_coord") {
+      state.coords = addUnique(state.coords, key);
+      state.exclude_coords = removeValue(state.exclude_coords, key);
+    } else if (action === "exclude_coord") {
+      state.exclude_coords = addUnique(state.exclude_coords, key);
+      state.coords = removeValue(state.coords, key);
+      delete state.target_weights.coords[key];
+    } else if (action === "remove_coord") {
+      state.coords = removeValue(state.coords, key);
+      delete state.target_weights.coords[key];
+    } else if (action === "remove_exclude_coord") {
+      state.exclude_coords = removeValue(state.exclude_coords, key);
+    } else if (action === "add_player") {
+      addPlayerTarget(state, village, false);
+    } else if (action === "exclude_player") {
+      addPlayerTarget(state, village, true);
+    } else if (action === "remove_player") {
+      removePlayerTarget(state, village, false);
+    } else if (action === "remove_exclude_player") {
+      removePlayerTarget(state, village, true);
+    } else if (action === "add_ally") {
+      addAllyTarget(state, village, false);
+    } else if (action === "exclude_ally") {
+      addAllyTarget(state, village, true);
+    } else if (action === "remove_ally") {
+      removeAllyTarget(state, village, false);
+    } else if (action === "remove_exclude_ally") {
+      removeAllyTarget(state, village, true);
+    }
+
+    return normalizeBuilderState(state);
+  }
+
+  function getVillageSelectionState(rawState, rawVillage) {
+    const state = normalizeBuilderState(rawState);
+    const village = normalizeVillage(rawVillage);
+    const player = village.player || {};
+    const ally = village.ally || {};
+
+    return {
+      coordTargeted: listHas(state.coords, coordKey(village)),
+      playerTargeted: listHas(state.player_ids, player.id) || listHas(state.players, player.name),
+      allyTargeted: listHas(state.ally_ids, ally.id) || listHas(state.ally_tags, ally.tag) || listHas(state.allies, ally.name),
+      coordProtected: listHas(state.exclude_coords, coordKey(village)),
+      playerProtected: listHas(state.exclude_player_ids, player.id) || listHas(state.exclude_players, player.name),
+      allyProtected: listHas(state.exclude_ally_ids, ally.id) || listHas(state.exclude_ally_tags, ally.tag) || listHas(state.exclude_allies, ally.name),
+    };
+  }
+
+  function getVillageMarkerType(rawState, rawVillage) {
+    const selected = getVillageSelectionState(rawState, rawVillage);
+    if (selected.coordProtected || selected.playerProtected || selected.allyProtected) return "exclude";
+    if (selected.coordTargeted) return "coord";
+    if (selected.playerTargeted || selected.allyTargeted) return "group";
+    return null;
+  }
+
+  function removeStateItem(rawState, key, value) {
+    const state = normalizeBuilderState(rawState);
+    if (!LIST_KEYS.includes(key)) return state;
+
+    state[key] = removeValue(state[key], value);
+    if (key === "coords" || key === "exclude_coords") delete state.target_weights.coords[String(value)];
+    if (key === "players" || key === "player_ids" || key === "exclude_players" || key === "exclude_player_ids") {
+      delete state.target_weights.players[String(value)];
+    }
+    if (key === "allies" || key === "ally_tags" || key === "ally_ids" || key === "exclude_allies" || key === "exclude_ally_tags" || key === "exclude_ally_ids") {
+      delete state.target_weights.allies[String(value)];
+    }
+
+    return normalizeBuilderState(state);
+  }
+
+  function searchWorldTargets(world, query, limit = 20) {
+    const needle = String(query || "").trim().toLowerCase();
+    if (needle.length < 2) return { players: [], allies: [], coords: parseCoordKeys(query) };
+
+    const players = [];
+    const allies = [];
+    for (const player of world.playersById ? world.playersById.values() : []) {
+      if (matchesSearch(player, needle, ["id", "name"])) players.push(player);
+      if (players.length >= limit) break;
+    }
+    for (const ally of world.alliesById ? world.alliesById.values() : []) {
+      if (matchesSearch(ally, needle, ["id", "name", "tag"])) allies.push(ally);
+      if (allies.length >= limit) break;
+    }
+    return { players, allies, coords: parseCoordKeys(query) };
+  }
+
+  function matchesSearch(item, needle, keys) {
+    return keys.some((key) => String(item[key] || "").toLowerCase().includes(needle));
+  }
+
+  function addPlayerTarget(state, village, excluded) {
+    if (!village.player || !village.player.id || String(village.player.id) === BARBARIAN_PLAYER_ID) return;
+    const prefix = excluded ? "exclude_" : "";
+    const opposite = excluded ? "" : "exclude_";
+    state[`${prefix}players`] = addUnique(state[`${prefix}players`], village.player.name);
+    state[`${prefix}player_ids`] = addUnique(state[`${prefix}player_ids`], village.player.id);
+    state[`${opposite}players`] = removeValue(state[`${opposite}players`], village.player.name);
+    state[`${opposite}player_ids`] = removeValue(state[`${opposite}player_ids`], village.player.id);
+    if (excluded) delete state.target_weights.players[String(village.player.id)];
+  }
+
+  function removePlayerTarget(state, village, excluded) {
+    if (!village.player) return;
+    const prefix = excluded ? "exclude_" : "";
+    state[`${prefix}players`] = removeValue(state[`${prefix}players`], village.player.name);
+    state[`${prefix}player_ids`] = removeValue(state[`${prefix}player_ids`], village.player.id);
+    delete state.target_weights.players[String(village.player.id)];
+    delete state.target_weights.players[String(village.player.name)];
+  }
+
+  function addAllyTarget(state, village, excluded) {
+    if (!village.ally || !village.ally.id || String(village.ally.id) === NO_ALLY_ID) return;
+    const prefix = excluded ? "exclude_" : "";
+    const opposite = excluded ? "" : "exclude_";
+    state[`${prefix}allies`] = addUnique(state[`${prefix}allies`], village.ally.name);
+    state[`${prefix}ally_tags`] = addUnique(state[`${prefix}ally_tags`], village.ally.tag);
+    state[`${prefix}ally_ids`] = addUnique(state[`${prefix}ally_ids`], village.ally.id);
+    state[`${opposite}allies`] = removeValue(state[`${opposite}allies`], village.ally.name);
+    state[`${opposite}ally_tags`] = removeValue(state[`${opposite}ally_tags`], village.ally.tag);
+    state[`${opposite}ally_ids`] = removeValue(state[`${opposite}ally_ids`], village.ally.id);
+    if (excluded) delete state.target_weights.allies[String(village.ally.id)];
+  }
+
+  function removeAllyTarget(state, village, excluded) {
+    if (!village.ally) return;
+    const prefix = excluded ? "exclude_" : "";
+    state[`${prefix}allies`] = removeValue(state[`${prefix}allies`], village.ally.name);
+    state[`${prefix}ally_tags`] = removeValue(state[`${prefix}ally_tags`], village.ally.tag);
+    state[`${prefix}ally_ids`] = removeValue(state[`${prefix}ally_ids`], village.ally.id);
+    delete state.target_weights.allies[String(village.ally.id)];
+    delete state.target_weights.allies[String(village.ally.tag)];
+    delete state.target_weights.allies[String(village.ally.name)];
+  }
+
+  function setTargetWeight(rawState, group, key, weight) {
+    const state = normalizeBuilderState(rawState);
+    const normalizedWeight = Number(weight);
+    if (!state.target_weights[group]) return state;
+    if (!Number.isFinite(normalizedWeight) || normalizedWeight <= 1) delete state.target_weights[group][String(key)];
+    else state.target_weights[group][String(key)] = normalizedWeight;
+    return normalizeBuilderState(state);
+  }
+
+  function normalizeVillage(raw = {}) {
+    const ownerRaw = raw.owner && typeof raw.owner === "object" ? raw.owner : {};
+    let player = normalizePlayer(raw.player || ownerRaw);
+    const ownerProvided = raw.owner != null && typeof raw.owner !== "object";
+    const ownerId = ownerProvided ? raw.owner : "";
+    const rawPlayerId = ownerProvided ? ownerId : raw.playerId || raw.player_id || raw.owner_id || player.id || BARBARIAN_PLAYER_ID;
+    const playerId = String(rawPlayerId);
+    const allyRaw = raw.ally && typeof raw.ally === "object" ? raw.ally : {};
+    const allyId = raw.ally && typeof raw.ally !== "object" ? raw.ally : raw.allyId || raw.ally_id || raw.tribe_id || raw.tribeId || "";
+    let ally = normalizeAlly(Object.assign({}, allyRaw, {
+      id: allyRaw.id || allyId,
+      name: allyRaw.name || raw.ally_name || raw.tribe_name,
+      tag: allyRaw.tag || raw.ally_tag || raw.tribe_tag,
+    }));
+    const x = Number(raw.x);
+    const y = Number(raw.y);
+
+    if (ownerProvided && player.id && player.id !== playerId) {
+      player = normalizePlayer({});
+      ally = normalizeAlly({});
+    }
+    if (!player.id && playerId !== BARBARIAN_PLAYER_ID) player.id = playerId;
+    if (!player.name) player.name = raw.player_name || raw.owner_name || "";
+    if (!player.allyId && ally.id) player.allyId = ally.id;
+
+    return {
+      id: raw.id != null ? String(raw.id) : "",
+      name: raw.name || "",
+      x,
+      y,
+      playerId,
+      points: Number(raw.points || 0),
+      player: player.id ? player : null,
+      ally: ally.id ? ally : null,
+    };
+  }
+
+  function normalizeTwMapVillageEntry(key, raw = {}, world = {}) {
+    const keyCoord = coordFromTwMapKey(key);
+    const mapSeed = Object.assign({}, keyCoord || {}, raw || {});
+    const mapVillage = normalizeVillage(mapSeed);
+    const worldVillage = Number.isFinite(mapVillage.x) && Number.isFinite(mapVillage.y) && world.villagesByCoord
+      ? world.villagesByCoord.get(coordKey(mapVillage))
+      : null;
+    return normalizeVillage(Object.assign({}, worldVillage || {}, mapSeed));
+  }
+
+  function coordFromTwMapKey(key) {
+    const text = String(key || "");
+    let match = /^(\d{1,3})\|(\d{1,3})$/.exec(text);
+    if (match) return { x: Number(match[1]), y: Number(match[2]) };
+    match = /^(\d{3})(\d{3})$/.exec(text);
+    return match ? { x: Number(match[1]), y: Number(match[2]) } : null;
+  }
+
+  function normalizePlayer(raw = {}) {
+    return {
+      id: raw.id != null ? String(raw.id) : "",
+      name: raw.name || "",
+      allyId: raw.allyId != null ? String(raw.allyId) : raw.ally_id != null ? String(raw.ally_id) : "",
+    };
+  }
+
+  function normalizeAlly(raw = {}) {
+    return {
+      id: raw.id != null ? String(raw.id) : "",
+      name: raw.name || "",
+      tag: raw.tag || "",
+    };
+  }
+
+  function classifyVillage(rawVillage, context = {}) {
+    const village = normalizeVillage(rawVillage);
+    const currentPlayer = context.currentPlayer || {};
+    const relations = context.relations || {};
+
+    if (village.playerId === BARBARIAN_PLAYER_ID) return "barbarian";
+    if (String(currentPlayer.id || "") && village.playerId === String(currentPlayer.id)) return "own";
+
+    const player = village.player || {};
+    const allyId = String(player.allyId || NO_ALLY_ID);
+    const currentAlly = String(currentPlayer.ally || currentPlayer.allyId || NO_ALLY_ID);
+    if (currentAlly !== NO_ALLY_ID && allyId === currentAlly) return "same_ally";
+    if (idIn(relations.non_attackable_players, village.playerId)) return "non_attackable";
+    if (idIn(relations.friends, village.playerId)) return "friend";
+
+    const relation = String(valueById(relations.allyRelations, allyId) || "").toLowerCase();
+    if (relation === "partner") return "partner";
+    if (relation === "nap") return "nap";
+    if (!player.id) return "missing_player";
+    return allyId && allyId !== NO_ALLY_ID ? "enemy" : "neutral";
+  }
+
+  function idIn(collection, id) {
+    const key = String(id);
+    if (!collection) return false;
+    if (collection instanceof Map) return collection.has(key) || collection.has(Number(key));
+    if (Array.isArray(collection) || (typeof collection[Symbol.iterator] === "function" && typeof collection !== "string")) {
+      return Array.from(collection).some((value) => String(value) === key);
+    }
+    if (typeof collection === "object") return Boolean(collection[key]);
+    return String(collection) === key;
+  }
+
+  function valueById(collection, id) {
+    const key = String(id);
+    if (!collection) return undefined;
+    if (collection instanceof Map) return collection.get(key) || collection.get(Number(key));
+    return typeof collection === "object" ? collection[key] : undefined;
+  }
+
+  function buildSafeFakesConfig(rawState) {
+    const state = normalizeBuilderState(rawState);
+    return {
+      coords: state.coords.join(" "),
+      players: state.players.join(","),
+      player_ids: state.player_ids.join(","),
+      allies: state.allies.join(","),
+      ally_tags: state.ally_tags.join(","),
+      ally_ids: state.ally_ids.join(","),
+      exclude_coords: state.exclude_coords.join(" "),
+      exclude_players: state.exclude_players.join(","),
+      exclude_player_ids: state.exclude_player_ids.join(","),
+      exclude_allies: state.exclude_allies.join(","),
+      exclude_ally_tags: state.exclude_ally_tags.join(","),
+      exclude_ally_ids: state.exclude_ally_ids.join(","),
+      include_barbarians: state.include_barbarians,
+      min_points: state.min_points,
+      max_points: state.max_points,
+      random_target: state.random_target,
+      random_target_by: state.random_target_by,
+      target_weights: state.target_weights,
+    };
+  }
+
+  function buildBookmarklet(config, scriptUrl = SAFE_FAKES_SCRIPT_URL) {
+    return `javascript:window.SafeFakes=${JSON.stringify(config)};$.getScript(${JSON.stringify(scriptUrl)});void 0;`;
+  }
+
+  function parseMapRows(text) {
+    return String(text || "")
+      .trim()
+      .split(/\n+/)
+      .filter(Boolean)
+      .map((line) => line.split(",").map(decodeMapValue));
+  }
+
+  function decodeMapValue(value) {
+    try {
+      return decodeURIComponent(String(value || "").replace(/\+/g, " "));
+    } catch (_) {
+      return String(value || "").replace(/\+/g, " ");
+    }
+  }
+
+  function parseWorld(villageText, playerText, allyText) {
+    const villagesByCoord = new Map();
+    const playersById = new Map();
+    const alliesById = new Map();
+
+    for (const row of parseMapRows(villageText)) {
+      const village = {
+        id: row[0],
+        name: row[1],
+        x: Number(row[2]),
+        y: Number(row[3]),
+        playerId: row[4],
+        points: Number(row[5] || 0),
+      };
+      if (Number.isFinite(village.x) && Number.isFinite(village.y)) {
+        villagesByCoord.set(coordKey(village), village);
+      }
+    }
+
+    for (const row of parseMapRows(playerText)) {
+      playersById.set(row[0], {
+        id: row[0],
+        name: row[1],
+        allyId: row[2],
+      });
+    }
+
+    for (const row of parseMapRows(allyText)) {
+      alliesById.set(row[0], {
+        id: row[0],
+        name: row[1],
+        tag: row[2],
+      });
+    }
+
+    for (const village of villagesByCoord.values()) {
+      village.player = playersById.get(String(village.playerId)) || null;
+      village.ally = village.player ? alliesById.get(String(village.player.allyId)) || null : null;
+    }
+
+    return { villagesByCoord, playersById, alliesById };
+  }
+
+  async function fetchWorld() {
+    const [village, player, ally] = await Promise.all([
+      fetchText("map/village.txt"),
+      fetchText("map/player.txt"),
+      fetchText("map/ally.txt"),
+    ]);
+    return parseWorld(village, player, ally);
+  }
+
+  async function fetchText(url) {
+    const response = await root.fetch(url, { credentials: "same-origin" });
+    if (!response.ok) throw new Error(`Nie moge pobrac ${url}: HTTP ${response.status}`);
+    return response.text();
+  }
+
+  function snapshotRelations(twMap) {
+    if (!twMap) return {};
+    return {
+      allyRelations: twMap.allyRelations || {},
+      friends: twMap.friends || {},
+      non_attackable_players: normalizeIdList(twMap.non_attackable_players),
+    };
+  }
+
+  function normalizeIdList(value) {
+    if (!value) return [];
+    if (Array.isArray(value) || (typeof value[Symbol.iterator] === "function" && typeof value !== "string")) {
+      return Array.from(value).map(String);
+    }
+    if (typeof value === "object") return Object.keys(value).filter((key) => value[key]);
+    return splitLooseList(value);
+  }
+
+  async function run() {
+    const app = getApp();
+    await app.start();
+  }
+
+  function getApp() {
+    if (root.__safeFakesBuilderApp) return root.__safeFakesBuilderApp;
+    root.__safeFakesBuilderApp = createApp();
+    return root.__safeFakesBuilderApp;
+  }
+
+  function createApp() {
+    const documentRef = root.document;
+    let state = loadState();
+    let world = { villagesByCoord: new Map(), playersById: new Map(), alliesById: new Map() };
+    let relations = {};
+    let panel = null;
+    let popup = null;
+    let exportText = null;
+    let status = "Laduje dane mapy...";
+    let highlightedElements = new Set();
+    let mapRenderTimer = null;
+    let searchQuery = "";
+    let manualCoordsText = "";
+    let originalOnClick = null;
+    let spawnHooks = [];
+
+    async function start() {
+      if (!documentRef) return;
+      if (!isMapScreen()) {
+        redirectToMap();
+        return;
+      }
+      renderStyle();
+      renderPanel();
+      await waitForTwMap();
+      relations = snapshotRelations(root.TWMap);
+      hookMap();
+      renderPanel();
+      await loadWorld();
+    }
+
+    function stop() {
+      restoreMap();
+      clearHighlights();
+      if (popup) popup.remove();
+      if (panel) panel.remove();
+      popup = null;
+      panel = null;
+      root.__safeFakesBuilderApp = null;
+    }
+
+    async function loadWorld() {
+      try {
+        world = await fetchWorld();
+        status = `Dane mapy OK: ${world.villagesByCoord.size} wiosek`;
+      } catch (error) {
+        status = `Brak pelnych danych mapy: ${error.message}`;
+      }
+      renderPanel();
+      applyHighlights();
+    }
+
+    function isMapScreen() {
+      return !root.game_data || !root.game_data.screen || root.game_data.screen === "map";
+    }
+
+    function redirectToMap() {
+      showInfo("Przechodze na mape.");
+      const url = root.TribalWars
+        ? root.TribalWars.buildURL("GET", "map", {})
+        : "game.php?screen=map";
+      root.location.href = url;
+    }
+
+    function waitForTwMap(timeoutMs = 5000) {
+      if (root.TWMap && root.TWMap.map && root.TWMap.map.handler) return Promise.resolve();
+      return new Promise((resolve, reject) => {
+        const startedAt = Date.now();
+        const timer = root.setInterval(() => {
+          if (root.TWMap && root.TWMap.map && root.TWMap.map.handler) {
+            root.clearInterval(timer);
+            resolve();
+          } else if (Date.now() - startedAt > timeoutMs) {
+            root.clearInterval(timer);
+            reject(new Error("TWMap nie jest gotowy na tej stronie."));
+          }
+        }, 100);
+      });
+    }
+
+    function hookMap() {
+      const handler = root.TWMap && root.TWMap.map && root.TWMap.map.handler;
+      if (handler && !handler.__safeFakesBuilderOnClick) {
+        originalOnClick = handler.onClick;
+        handler.__safeFakesBuilderOnClick = originalOnClick;
+        handler.onClick = (x, y, event) => {
+          if (event && event.preventDefault) event.preventDefault();
+          handleMapClick(x, y, event || root.event);
+          return false;
+        };
+      }
+
+      hookSpawnSector(root.TWMap && root.TWMap.mapHandler);
+      hookSpawnSector(root.TWMap && root.TWMap.map && root.TWMap.map.handler);
+    }
+
+    function hookSpawnSector(host) {
+      if (!host || typeof host.spawnSector !== "function" || host.__safeFakesBuilderSpawnSector) return;
+      const original = host.spawnSector;
+      host.__safeFakesBuilderSpawnSector = original;
+      spawnHooks.push(host);
+      host.spawnSector = function safeFakesBuilderSpawnSector() {
+        const result = original.apply(this, arguments);
+        scheduleHighlightsAfterMapChange();
+        return result;
+      };
+    }
+
+    function restoreMap() {
+      const handler = root.TWMap && root.TWMap.map && root.TWMap.map.handler;
+      if (handler && handler.__safeFakesBuilderOnClick) {
+        handler.onClick = handler.__safeFakesBuilderOnClick;
+        delete handler.__safeFakesBuilderOnClick;
+      } else if (handler && originalOnClick) {
+        handler.onClick = originalOnClick;
+      }
+
+      for (const host of spawnHooks) {
+        if (host && host.__safeFakesBuilderSpawnSector) {
+          host.spawnSector = host.__safeFakesBuilderSpawnSector;
+          delete host.__safeFakesBuilderSpawnSector;
+        }
+      }
+      spawnHooks = [];
+      clearRenderTimers();
+    }
+
+    function handleMapClick(x, y, event) {
+      const village = getVillageAt(x, y);
+      if (!village || !Number.isFinite(village.x) || !Number.isFinite(village.y)) return;
+      showVillagePopup(village, event);
+    }
+
+    function getVillageAt(x, y) {
+      const key = `${Number(x)}|${Number(y)}`;
+      const worldVillage = world.villagesByCoord.get(key);
+      const mapVillage = getTwMapVillage(x, y) || {};
+      return enrichVillage(Object.assign({}, mapVillage, worldVillage || {}, { x: Number(x), y: Number(y) }));
+    }
+
+    function enrichVillage(raw) {
+      const village = normalizeVillage(raw);
+      if (!village.player && village.playerId !== BARBARIAN_PLAYER_ID) {
+        village.player = world.playersById.get(String(village.playerId)) || null;
+      }
+      if (!village.ally && village.player) {
+        village.ally = world.alliesById.get(String(village.player.allyId)) || null;
+      }
+      return village;
+    }
+
+    function getTwMapVillage(x, y) {
+      const villages = root.TWMap && root.TWMap.villages;
+      if (!villages) return null;
+      const joined = `${Number(x)}${Number(y)}`;
+      return villages[joined] || villages[Number(joined)] || villages[`${Number(x)}|${Number(y)}`] || villages[Number(x) * 1000 + Number(y)] || null;
+    }
+
+    function showVillagePopup(village, event) {
+      if (popup) popup.remove();
+
+      const relation = classifyVillage(village, {
+        currentPlayer: root.game_data && root.game_data.player,
+        relations,
+      });
+      const canTarget = canTargetVillage(relation);
+      const hasPlayer = village.player && village.player.id && village.player.id !== BARBARIAN_PLAYER_ID;
+      const hasAlly = village.ally && village.ally.id && village.ally.id !== NO_ALLY_ID;
+      const selected = getVillageSelectionState(state, village);
+
+      popup = documentRef.createElement("div");
+      popup.id = "safe-fakes-builder-popup";
+      popup.appendChild(createPopupHeader(village, relation));
+      popup.appendChild(createPopupSection("Cele", [
+        makeActionButton(selected.coordTargeted ? "Usun koord" : "Koord", selected.coordTargeted ? "remove_coord" : "add_coord", village, !selected.coordTargeted && !canTarget, "target"),
+        makeActionButton(selected.playerTargeted ? "Usun gracza" : "Gracz", selected.playerTargeted ? "remove_player" : "add_player", village, !hasPlayer || (!selected.playerTargeted && !canTarget), "target"),
+        makeActionButton(selected.allyTargeted ? "Usun plemie" : "Plemie", selected.allyTargeted ? "remove_ally" : "add_ally", village, !hasAlly || (!selected.allyTargeted && !canTarget), "target"),
+      ]));
+      popup.appendChild(createPopupSection("Nie ruszac", [
+        makeActionButton(selected.coordProtected ? "Usun ochrone koordu" : "Chron koord", selected.coordProtected ? "remove_exclude_coord" : "exclude_coord", village, false, "protect"),
+        makeActionButton(selected.playerProtected ? "Usun ochrone gracza" : "Chron gracza", selected.playerProtected ? "remove_exclude_player" : "exclude_player", village, !hasPlayer, "protect"),
+        makeActionButton(selected.allyProtected ? "Usun ochrone plemienia" : "Chron plemie", selected.allyProtected ? "remove_exclude_ally" : "exclude_ally", village, !hasAlly, "protect"),
+      ]));
+      popup.appendChild(createButtonGrid([
+        makeWeightButton("Waga koord", "coords", coordKey(village), state.target_weights.coords[coordKey(village)]),
+        makeCloseButton(),
+      ]));
+
+      documentRef.body.appendChild(popup);
+      positionPopup(popup, event);
+    }
+
+    function createPopupHeader(village, relation) {
+      const header = documentRef.createElement("div");
+      header.className = "sfb-popup-header";
+
+      const title = documentRef.createElement("strong");
+      title.textContent = `${village.name || "Wioska"} (${coordKey(village)})`;
+      header.appendChild(title);
+
+      const meta = documentRef.createElement("div");
+      meta.className = "sfb-popup-meta";
+      const player = village.player ? village.player.name || village.player.id : "brak gracza";
+      const ally = village.ally ? village.ally.tag || village.ally.name || village.ally.id : "bez plemienia";
+      meta.textContent = `${player} / ${ally} / ${village.points || 0} pkt`;
+      header.appendChild(meta);
+
+      const badge = documentRef.createElement("span");
+      badge.className = `sfb-relation sfb-relation-${relation}`;
+      badge.textContent = RELATION_LABELS[relation] || relation;
+      header.appendChild(badge);
+
+      return header;
+    }
+
+    function createPopupSection(titleText, buttons) {
+      const section = documentRef.createElement("div");
+      section.className = "sfb-popup-section";
+      const title = documentRef.createElement("div");
+      title.className = "sfb-popup-section-title";
+      title.textContent = titleText;
+      section.appendChild(title);
+      section.appendChild(createButtonGrid(buttons));
+      return section;
+    }
+
+    function createButtonGrid(buttons) {
+      const grid = documentRef.createElement("div");
+      grid.className = "sfb-button-grid";
+      for (const button of buttons) grid.appendChild(button);
+      return grid;
+    }
+
+    function makeActionButton(label, action, village, disabled, kind) {
+      const button = documentRef.createElement("button");
+      button.type = "button";
+      button.textContent = label;
+      button.className = kind ? `sfb-button-${kind}` : "";
+      button.disabled = Boolean(disabled);
+      button.addEventListener("click", () => {
+        updateState(applyVillageAction(state, village, action));
+        showVillagePopup(village, null);
+      });
+      return button;
+    }
+
+    function makeWeightButton(label, group, key, current) {
+      const button = documentRef.createElement("button");
+      button.type = "button";
+      button.textContent = current ? `${label}: ${current}` : label;
+      button.addEventListener("click", () => {
+        const value = root.prompt("Podaj wage losowania. 1 usuwa wage.", current || "2");
+        if (value == null) return;
+        updateState(setTargetWeight(state, group, key, value));
+      });
+      return button;
+    }
+
+    function makeCloseButton() {
+      const button = documentRef.createElement("button");
+      button.type = "button";
+      button.textContent = "Zamknij";
+      button.addEventListener("click", () => {
+        if (popup) popup.remove();
+        popup = null;
+      });
+      return button;
+    }
+
+    function canTargetVillage(relation) {
+      if (PROTECTED_RELATIONS.has(relation)) return false;
+      if (relation === "barbarian" && !state.include_barbarians) return false;
+      return relation !== "missing_player";
+    }
+
+    function positionPopup(element, event) {
+      const width = 330;
+      const height = 260;
+      const x = event && Number.isFinite(event.clientX) ? event.clientX + 12 : root.innerWidth - width - 20;
+      const y = event && Number.isFinite(event.clientY) ? event.clientY + 12 : 130;
+      element.style.left = `${Math.max(8, Math.min(x, root.innerWidth - width - 8))}px`;
+      element.style.top = `${Math.max(8, Math.min(y, root.innerHeight - height - 8))}px`;
+    }
+
+    function updateState(nextState) {
+      state = normalizeBuilderState(nextState);
+      saveState(state);
+      renderPanel();
+      applyHighlights();
+    }
+
+    function renderPanel() {
+      if (!panel) {
+        panel = documentRef.createElement("div");
+        panel.id = "safe-fakes-builder";
+        documentRef.body.appendChild(panel);
+      }
+
+      panel.innerHTML = "";
+      const title = documentRef.createElement("div");
+      title.className = "sfb-title";
+      title.textContent = "SafeFakes Builder";
+      panel.appendChild(title);
+
+      const statusNode = documentRef.createElement("div");
+      statusNode.className = "sfb-status";
+      statusNode.textContent = status;
+      panel.appendChild(statusNode);
+
+      panel.appendChild(createCounts());
+      panel.appendChild(createOptions());
+      panel.appendChild(createLegend());
+      panel.appendChild(createManualControls());
+      panel.appendChild(createSelectionLists());
+      panel.appendChild(createExportControls());
+    }
+
+    function createCounts() {
+      const wrap = documentRef.createElement("div");
+      wrap.className = "sfb-counts";
+      const rows = [
+        ["koordy", state.coords.length],
+        ["gracze", state.player_ids.length || state.players.length],
+        ["plemiona", state.ally_ids.length || state.ally_tags.length],
+        ["wykluczenia", state.exclude_coords.length + state.exclude_player_ids.length + state.exclude_ally_ids.length],
+      ];
+      for (const [label, count] of rows) {
+        const item = documentRef.createElement("span");
+        item.textContent = `${label}: ${count}`;
+        wrap.appendChild(item);
+      }
+      return wrap;
+    }
+
+    function createOptions() {
+      const wrap = documentRef.createElement("div");
+      wrap.className = "sfb-options";
+
+      const barbarians = createCheckbox("Barbarzynskie jako cele", state.include_barbarians, (checked) => {
+        updateState(Object.assign({}, state, { include_barbarians: checked }));
+      });
+      wrap.appendChild(barbarians);
+
+      const minPoints = createNumberInput("Min pkt", state.min_points, (value) => {
+        updateState(Object.assign({}, state, { min_points: value }));
+      });
+      wrap.appendChild(minPoints);
+
+      const maxPoints = createNumberInput("Max pkt", state.max_points, (value) => {
+        updateState(Object.assign({}, state, { max_points: value }));
+      });
+      wrap.appendChild(maxPoints);
+
+      const randomBy = documentRef.createElement("select");
+      for (const [value, label] of [["village", "losuj wioske"], ["player", "losuj gracza"], ["ally", "losuj plemie"]]) {
+        const option = documentRef.createElement("option");
+        option.value = value;
+        option.textContent = label;
+        option.selected = state.random_target_by === value;
+        randomBy.appendChild(option);
+      }
+      randomBy.addEventListener("change", () => {
+        updateState(Object.assign({}, state, { random_target_by: randomBy.value }));
+      });
+      wrap.appendChild(randomBy);
+
+      return wrap;
+    }
+
+    function createCheckbox(label, checked, onChange) {
+      const wrap = documentRef.createElement("label");
+      const input = documentRef.createElement("input");
+      input.type = "checkbox";
+      input.checked = Boolean(checked);
+      input.addEventListener("change", () => onChange(input.checked));
+      wrap.appendChild(input);
+      wrap.appendChild(documentRef.createTextNode(` ${label}`));
+      return wrap;
+    }
+
+    function createNumberInput(label, value, onChange) {
+      const wrap = documentRef.createElement("label");
+      wrap.textContent = label;
+      const input = documentRef.createElement("input");
+      input.type = "number";
+      input.min = "0";
+      input.step = "1";
+      input.value = String(value || 0);
+      input.addEventListener("change", () => onChange(Math.max(0, Number(input.value || 0))));
+      wrap.appendChild(input);
+      return wrap;
+    }
+
+    function createLegend() {
+      const legend = documentRef.createElement("div");
+      legend.className = "sfb-legend";
+      for (const [label, color] of [["koord", COLORS.coord], ["gracz/plemie", COLORS.group], ["chronione", COLORS.exclude]]) {
+        const item = documentRef.createElement("span");
+        const swatch = documentRef.createElement("i");
+        swatch.style.background = color;
+        item.appendChild(swatch);
+        item.appendChild(documentRef.createTextNode(label));
+        legend.appendChild(item);
+      }
+      return legend;
+    }
+
+    function createManualControls() {
+      const details = documentRef.createElement("details");
+      details.className = "sfb-details";
+      const summary = documentRef.createElement("summary");
+      summary.textContent = "Dodaj recznie";
+      details.appendChild(summary);
+
+      const wrap = documentRef.createElement("div");
+      wrap.className = "sfb-manual";
+      const searchInput = documentRef.createElement("input");
+      searchInput.type = "search";
+      searchInput.placeholder = "gracz, plemie, tag, ID";
+      searchInput.value = searchQuery;
+      searchInput.addEventListener("input", () => {
+        searchQuery = searchInput.value;
+      });
+      const searchButton = createPanelButton("Szukaj", () => {
+        searchQuery = searchInput.value;
+        renderPanel();
+      });
+      wrap.appendChild(searchInput);
+      wrap.appendChild(searchButton);
+      wrap.appendChild(createSearchResults());
+
+      const coords = documentRef.createElement("textarea");
+      coords.placeholder = "500|500 501|501";
+      coords.value = manualCoordsText;
+      coords.addEventListener("input", () => {
+        manualCoordsText = coords.value;
+      });
+      wrap.appendChild(coords);
+
+      const coordActions = documentRef.createElement("div");
+      coordActions.className = "sfb-actions";
+      coordActions.appendChild(createPanelButton("Dodaj koordy", () => addManualCoords("coords")));
+      coordActions.appendChild(createPanelButton("Chron koordy", () => addManualCoords("exclude_coords")));
+      wrap.appendChild(coordActions);
+
+      details.appendChild(wrap);
+      return details;
+    }
+
+    function createSearchResults() {
+      const results = searchWorldTargets(world, searchQuery, 20);
+      const box = documentRef.createElement("div");
+      box.className = "sfb-search-results";
+      if (!searchQuery.trim()) return box;
+
+      if (results.coords.length) {
+        box.appendChild(createSearchRow(`koordy: ${results.coords.join(" ")}`, [
+          ["Cel", () => updateState(addCoords(state, results.coords, false))],
+          ["Chron", () => updateState(addCoords(state, results.coords, true))],
+        ]));
+      }
+
+      if (results.allies.length > 1) {
+        box.appendChild(createSearchRow(`plemiona z wynikow: ${results.allies.length}`, [
+          ["Cel wszystkie", () => updateState(addAllies(state, results.allies, false))],
+          ["Chron wszystkie", () => updateState(addAllies(state, results.allies, true))],
+        ]));
+      }
+
+      for (const ally of results.allies) {
+        const label = `plemie ${ally.tag || ally.name} #${ally.id}`;
+        box.appendChild(createSearchRow(label, [
+          ["Cel", () => updateState(addAllies(state, [ally], false))],
+          ["Chron", () => updateState(addAllies(state, [ally], true))],
+        ]));
+      }
+
+      for (const player of results.players) {
+        const label = `gracz ${player.name} #${player.id}`;
+        box.appendChild(createSearchRow(label, [
+          ["Cel", () => updateState(addPlayer(state, player, false))],
+          ["Chron", () => updateState(addPlayer(state, player, true))],
+        ]));
+      }
+
+      if (!box.children.length) {
+        const empty = documentRef.createElement("div");
+        empty.className = "sfb-list-empty";
+        empty.textContent = "brak wynikow";
+        box.appendChild(empty);
+      }
+
+      return box;
+    }
+
+    function createSearchRow(label, actions) {
+      const row = documentRef.createElement("div");
+      row.className = "sfb-search-row";
+      const text = documentRef.createElement("span");
+      text.textContent = label;
+      row.appendChild(text);
+      for (const [buttonLabel, onClick] of actions) row.appendChild(createPanelButton(buttonLabel, onClick));
+      return row;
+    }
+
+    function addManualCoords(key) {
+      const coords = parseCoordKeys(manualCoordsText);
+      if (coords.length) updateState(addCoords(state, coords, key === "exclude_coords"));
+    }
+
+    function addCoords(rawState, coords, excluded) {
+      let next = rawState;
+      for (const key of coords) {
+        const coord = villageFromCoordKey(key);
+        if (coord) next = applyVillageAction(next, coord, excluded ? "exclude_coord" : "add_coord");
+      }
+      return next;
+    }
+
+    function addPlayer(rawState, player, excluded) {
+      return applyVillageAction(rawState, {
+        x: 0,
+        y: 0,
+        playerId: player.id,
+        player,
+        ally: world.alliesById.get(String(player.allyId)) || null,
+      }, excluded ? "exclude_player" : "add_player");
+    }
+
+    function addAllies(rawState, allies, excluded) {
+      let next = rawState;
+      for (const ally of allies) {
+        next = applyVillageAction(next, {
+          x: 0,
+          y: 0,
+          playerId: "",
+          player: { id: "", name: "", allyId: ally.id },
+          ally,
+        }, excluded ? "exclude_ally" : "add_ally");
+      }
+      return next;
+    }
+
+    function createSelectionLists() {
+      const wrap = documentRef.createElement("div");
+      wrap.className = "sfb-lists";
+      wrap.appendChild(createDetails("Cele", [
+        createCoordList("Wioski", "coords"),
+        createPairList("Gracze", pairPlayers(false), removePlayerPair),
+        createPairList("Plemiona", pairAllies(false), removeAllyPair),
+      ], true));
+      wrap.appendChild(createDetails("Nie ruszac", [
+        createCoordList("Wioski", "exclude_coords"),
+        createPairList("Gracze", pairPlayers(true), removePlayerPair),
+        createPairList("Plemiona", pairAllies(true), removeAllyPair),
+      ], false));
+      return wrap;
+    }
+
+    function createDetails(label, nodes, open) {
+      const details = documentRef.createElement("details");
+      details.className = "sfb-details";
+      details.open = open;
+      const summary = documentRef.createElement("summary");
+      summary.textContent = label;
+      details.appendChild(summary);
+      for (const node of nodes) details.appendChild(node);
+      return details;
+    }
+
+    function createCoordList(label, key) {
+      return createListGroup(label, state[key].map((value) => ({
+        label: value,
+        onRemove: () => updateState(removeStateItem(state, key, value)),
+      })));
+    }
+
+    function createPairList(label, items, onRemove) {
+      return createListGroup(label, items.map((item) => ({
+        label: item.label,
+        onRemove: () => updateState(onRemove(state, item)),
+      })));
+    }
+
+    function createListGroup(label, rows) {
+      const group = documentRef.createElement("div");
+      group.className = "sfb-list-group";
+      const title = documentRef.createElement("div");
+      title.className = "sfb-list-title";
+      title.textContent = `${label}: ${rows.length}`;
+      group.appendChild(title);
+
+      if (rows.length === 0) {
+        const empty = documentRef.createElement("div");
+        empty.className = "sfb-list-empty";
+        empty.textContent = "puste";
+        group.appendChild(empty);
+        return group;
+      }
+
+      for (const row of rows.slice(0, 80)) {
+        const item = documentRef.createElement("div");
+        item.className = "sfb-list-item";
+        const text = documentRef.createElement("span");
+        text.textContent = row.label;
+        const remove = documentRef.createElement("button");
+        remove.type = "button";
+        remove.textContent = "x";
+        remove.title = "Usun";
+        remove.addEventListener("click", row.onRemove);
+        item.appendChild(text);
+        item.appendChild(remove);
+        group.appendChild(item);
+      }
+      if (rows.length > 80) {
+        const more = documentRef.createElement("div");
+        more.className = "sfb-list-empty";
+        more.textContent = `+${rows.length - 80} wiecej`;
+        group.appendChild(more);
+      }
+      return group;
+    }
+
+    function pairPlayers(excluded) {
+      const ids = excluded ? state.exclude_player_ids : state.player_ids;
+      const names = excluded ? state.exclude_players : state.players;
+      const length = Math.max(ids.length, names.length);
+      const items = [];
+      for (let i = 0; i < length; i++) {
+        const id = ids[i] || "";
+        const name = names[i] || "";
+        items.push({
+          id,
+          name,
+          excluded,
+          label: name && id ? `${name} (#${id})` : name || `#${id}`,
+        });
+      }
+      return items;
+    }
+
+    function pairAllies(excluded) {
+      const ids = excluded ? state.exclude_ally_ids : state.ally_ids;
+      const tags = excluded ? state.exclude_ally_tags : state.ally_tags;
+      const names = excluded ? state.exclude_allies : state.allies;
+      const length = Math.max(ids.length, tags.length, names.length);
+      const items = [];
+      for (let i = 0; i < length; i++) {
+        const id = ids[i] || "";
+        const tag = tags[i] || "";
+        const name = names[i] || "";
+        const label = [tag || name || `#${id}`, id ? `#${id}` : ""].filter(Boolean).join(" ");
+        items.push({ id, tag, name, excluded, label });
+      }
+      return items;
+    }
+
+    function removePlayerPair(rawState, item) {
+      let next = rawState;
+      const idKey = item.excluded ? "exclude_player_ids" : "player_ids";
+      const nameKey = item.excluded ? "exclude_players" : "players";
+      if (item.id) next = removeStateItem(next, idKey, item.id);
+      if (item.name) next = removeStateItem(next, nameKey, item.name);
+      return next;
+    }
+
+    function removeAllyPair(rawState, item) {
+      let next = rawState;
+      const idKey = item.excluded ? "exclude_ally_ids" : "ally_ids";
+      const tagKey = item.excluded ? "exclude_ally_tags" : "ally_tags";
+      const nameKey = item.excluded ? "exclude_allies" : "allies";
+      if (item.id) next = removeStateItem(next, idKey, item.id);
+      if (item.tag) next = removeStateItem(next, tagKey, item.tag);
+      if (item.name) next = removeStateItem(next, nameKey, item.name);
+      return next;
+    }
+
+    function createExportControls() {
+      const wrap = documentRef.createElement("div");
+      wrap.className = "sfb-export";
+
+      const buttons = documentRef.createElement("div");
+      buttons.className = "sfb-actions";
+      buttons.appendChild(createPanelButton("Bookmarklet", () => writeExport("bookmarklet")));
+      buttons.appendChild(createPanelButton("Config", () => writeExport("config")));
+      buttons.appendChild(createPanelButton("Kopiuj", copyExport));
+      buttons.appendChild(createPanelButton("Wyczysc", clearState));
+      buttons.appendChild(createPanelButton("Zamknij", stop));
+      wrap.appendChild(buttons);
+
+      exportText = documentRef.createElement("textarea");
+      exportText.readOnly = true;
+      exportText.value = buildBookmarklet(buildSafeFakesConfig(state));
+      wrap.appendChild(exportText);
+
+      return wrap;
+    }
+
+    function createPanelButton(label, onClick) {
+      const button = documentRef.createElement("button");
+      button.type = "button";
+      button.textContent = label;
+      button.addEventListener("click", onClick);
+      return button;
+    }
+
+    function writeExport(type) {
+      if (!exportText) return;
+      const config = buildSafeFakesConfig(state);
+      exportText.value = type === "config"
+        ? `window.SafeFakes = ${JSON.stringify(config, null, 2)};`
+        : buildBookmarklet(config);
+      exportText.focus();
+      exportText.select();
+    }
+
+    function copyExport() {
+      if (!exportText) return;
+      exportText.focus();
+      exportText.select();
+      if (root.navigator && root.navigator.clipboard) {
+        root.navigator.clipboard.writeText(exportText.value).then(
+          () => showInfo("Skopiowano konfiguracje."),
+          () => documentRef.execCommand("copy"),
+        );
+      } else {
+        documentRef.execCommand("copy");
+      }
+    }
+
+    function clearState() {
+      if (!root.confirm || root.confirm("Wyczysc konfiguracje buildera?")) {
+        updateState(createBuilderState());
+      }
+    }
+
+    function applyHighlights() {
+      applyMapHighlights();
+    }
+
+    function scheduleHighlightsAfterMapChange() {
+      if (!mapRenderTimer) {
+        mapRenderTimer = root.setTimeout(() => {
+          mapRenderTimer = null;
+          applyMapHighlights();
+        }, 0);
+      }
+    }
+
+    function clearRenderTimers() {
+      if (mapRenderTimer) root.clearTimeout(mapRenderTimer);
+      mapRenderTimer = null;
+    }
+
+    function applyMapHighlights() {
+      clearHighlights();
+      const markers = collectVisibleMarkedVillages();
+      for (const [key, marker] of markers) highlightCoord(key, marker.type, marker.village);
+    }
+
+    function collectVisibleMarkedVillages() {
+      const markers = new Map();
+      const visible = getVisibleVillages();
+      for (const village of visible.values()) {
+        const type = getVillageMarkerType(state, village);
+        if (type) markers.set(coordKey(village), { type, village });
+      }
+      for (const key of state.coords) {
+        if (visible.has(key) && (!markers.has(key) || markers.get(key).type !== "exclude")) markers.set(key, { type: "coord", village: visible.get(key) });
+      }
+      for (const key of state.exclude_coords) {
+        if (visible.has(key)) markers.set(key, { type: "exclude", village: visible.get(key) });
+      }
+      return markers;
+    }
+
+    function getVisibleVillages() {
+      const result = new Map();
+      const villages = root.TWMap && root.TWMap.villages;
+      if (!villages) return result;
+      for (const [key, value] of Object.entries(villages)) {
+        const village = enrichVillage(normalizeTwMapVillageEntry(key, value, world));
+        if (Number.isFinite(village.x) && Number.isFinite(village.y)) result.set(coordKey(village), village);
+      }
+      return result;
+    }
+
+    function highlightCoord(key, type, fallbackVillage) {
+      const village = fallbackVillage || world.villagesByCoord.get(key) || villageFromCoordKey(key);
+      if (village) highlightVillage(village, type);
+    }
+
+    function villageFromCoordKey(key) {
+      const match = /^(\d{1,3})\|(\d{1,3})$/.exec(String(key || ""));
+      return match ? { x: Number(match[1]), y: Number(match[2]) } : null;
+    }
+
+    function highlightVillage(village, type) {
+      const element = getMapVillageElement(village);
+      if (!element) return;
+      element.style.boxSizing = "border-box";
+      element.style.border = `5px solid ${COLORS[type]}`;
+      highlightedElements.add(element);
+    }
+
+    function clearHighlights() {
+      for (const element of highlightedElements) {
+        element.style.border = "none";
+      }
+      highlightedElements = new Set();
+    }
+
+    function getMapVillageElement(village) {
+      let id = village.id;
+      if (!id) {
+        const twVillage = getTwMapVillage(village.x, village.y);
+        id = twVillage && twVillage.id;
+      }
+      return id ? documentRef.querySelector(`#map_village_${id}`) : null;
+    }
+
+    function renderStyle() {
+      if (documentRef.querySelector("#safe-fakes-builder-style")) return;
+      const style = documentRef.createElement("style");
+      style.id = "safe-fakes-builder-style";
+      style.textContent = `
+#safe-fakes-builder,#safe-fakes-builder-popup{position:fixed;z-index:15000;background:#111827;color:#f9fafb;border:1px solid #374151;border-radius:6px;box-shadow:0 12px 28px rgba(0,0,0,.4);font:12px Arial,sans-serif}
+#safe-fakes-builder{right:12px;top:82px;width:360px;max-height:calc(100vh - 96px);overflow:auto;padding:10px}
+#safe-fakes-builder button,#safe-fakes-builder-popup button{font:12px Arial,sans-serif;line-height:1.2;padding:5px 7px;border:1px solid #4b5563;border-radius:4px;background:#1f2937;color:#f9fafb;cursor:pointer}
+#safe-fakes-builder button:hover,#safe-fakes-builder-popup button:hover{background:#374151}
+#safe-fakes-builder button:disabled,#safe-fakes-builder-popup button:disabled{opacity:.38;cursor:not-allowed}
+.sfb-title{font-weight:700;margin-bottom:6px;font-size:13px}
+.sfb-status{margin-bottom:8px;color:#d1d5db}
+.sfb-counts{display:grid;grid-template-columns:1fr 1fr;gap:4px;margin-bottom:8px}
+.sfb-counts span,.sfb-list-group{background:#0f172a;border:1px solid #243044;border-radius:5px;padding:5px}
+.sfb-options{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:8px}
+.sfb-options label{display:flex;align-items:center;gap:5px}
+.sfb-options input[type=number]{width:64px;background:#0f172a;color:#f9fafb;border:1px solid #4b5563;border-radius:4px}
+.sfb-options select{grid-column:1 / -1;background:#0f172a;color:#f9fafb;border:1px solid #4b5563;border-radius:4px;padding:4px}
+.sfb-legend{display:flex;gap:8px;margin-bottom:8px;flex-wrap:wrap;color:#d1d5db}
+.sfb-legend span{display:inline-flex;align-items:center;gap:4px}
+.sfb-legend i{width:10px;height:10px;display:inline-block;border:1px solid rgba(255,255,255,.45)}
+.sfb-manual{display:grid;grid-template-columns:1fr auto;gap:6px;padding:0 6px 6px}
+.sfb-manual input,.sfb-manual textarea{background:#0f172a;color:#f9fafb;border:1px solid #4b5563;border-radius:4px;box-sizing:border-box;width:100%;font:12px Arial,sans-serif}
+.sfb-manual textarea{grid-column:1 / -1;height:54px;resize:vertical}
+.sfb-search-results{grid-column:1 / -1;display:grid;gap:4px}
+.sfb-search-row{display:grid;grid-template-columns:1fr auto auto;gap:4px;align-items:center;background:#0f172a;border:1px solid #243044;border-radius:5px;padding:4px}
+.sfb-search-row span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sfb-lists{display:grid;gap:6px;margin-bottom:8px}
+.sfb-details{border:1px solid #243044;border-radius:5px;background:#0b1220}
+.sfb-details summary{cursor:pointer;padding:6px 7px;font-weight:700}
+.sfb-list-group{margin:0 6px 6px}
+.sfb-list-title{font-weight:700;color:#d1d5db;margin-bottom:4px}
+.sfb-list-empty{color:#9ca3af;font-size:11px}
+.sfb-list-item{display:grid;grid-template-columns:1fr 24px;align-items:center;gap:5px;margin-top:3px}
+.sfb-list-item span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sfb-list-item button{padding:2px 5px}
+.sfb-actions{display:grid;grid-template-columns:1fr 1fr 1fr;gap:4px;margin-bottom:6px}
+.sfb-export textarea{width:100%;height:86px;box-sizing:border-box;resize:vertical;font:11px Consolas,monospace;background:#0f172a;color:#f9fafb;border:1px solid #4b5563;border-radius:4px}
+#safe-fakes-builder-popup{width:340px;padding:10px}
+.sfb-popup-header{margin-bottom:8px}
+.sfb-popup-meta{margin:3px 0 5px;color:#d1d5db}
+.sfb-popup-section{margin-top:8px}
+.sfb-popup-section-title{font-weight:700;color:#d1d5db;margin-bottom:4px}
+.sfb-relation{display:inline-block;padding:2px 5px;border-radius:3px;background:#374151}
+.sfb-relation-enemy{background:#1d4ed8}
+.sfb-relation-neutral{background:#4b5563}
+.sfb-relation-barbarian{background:#4b5563}
+.sfb-relation-own,.sfb-relation-same_ally,.sfb-relation-partner,.sfb-relation-nap,.sfb-relation-friend,.sfb-relation-non_attackable{background:#92400e}
+.sfb-button-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:5px}
+.sfb-button-target{border-color:#2563eb!important}
+.sfb-button-protect{border-color:#b91c1c!important}
+`;
+      documentRef.head.appendChild(style);
+    }
+
+    return { start, stop };
+  }
+
+  function loadState() {
+    try {
+      const raw = root.localStorage && root.localStorage.getItem(STORAGE_KEY);
+      return normalizeBuilderState(raw ? JSON.parse(raw) : {});
+    } catch (_) {
+      return createBuilderState();
+    }
+  }
+
+  function saveState(state) {
+    try {
+      if (root.localStorage) root.localStorage.setItem(STORAGE_KEY, JSON.stringify(normalizeBuilderState(state)));
+    } catch (_) {
+      // localStorage can be unavailable in privacy modes.
+    }
+  }
+
+  function showInfo(message) {
+    if (root && root.UI && root.UI.InfoMessage) root.UI.InfoMessage(message);
+    else if (root && root.alert) root.alert(message);
+    else console.info(message);
+  }
+
+  function showError(error) {
+    const message = error && error.message ? error.message : String(error);
+    if (root && root.UI && root.UI.ErrorMessage) root.UI.ErrorMessage(message);
+    else if (root && root.alert) root.alert(message);
+    else console.error(message);
+  }
+
+  return {
+    createBuilderState,
+    normalizeBuilderState,
+    applyVillageAction,
+    classifyVillage,
+    getVillageSelectionState,
+    getVillageMarkerType,
+    normalizeTwMapVillageEntry,
+    removeStateItem,
+    parseCoordKeys,
+    searchWorldTargets,
+    setTargetWeight,
+    buildSafeFakesConfig,
+    buildBookmarklet,
+    parseWorld,
+    run,
+    showError,
+  };
+});

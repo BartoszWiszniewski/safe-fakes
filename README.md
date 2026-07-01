@@ -85,10 +85,10 @@ javascript:window.SafeFakes={
 
 Drugi skrypt sluzy tylko do zbudowania konfiguracji. Uruchom go na mapie, klikaj wioski i eksportuj gotowy bookmarklet dla `SafeFakes.js`.
 
-Gotowy adres buildera: `https://cdn.jsdelivr.net/gh/BartoszWiszniewski/safe-fakes/SafeFakesBuilder.js`.
+Gotowy adres buildera: `https://cdn.jsdelivr.net/gh/BartoszWiszniewski/safe-fakes/SafeFakesBuilderLive.js`.
 
 ```js
-javascript:$.getScript("https://cdn.jsdelivr.net/gh/BartoszWiszniewski/safe-fakes/SafeFakesBuilder.js");void 0;
+javascript:$.getScript("https://cdn.jsdelivr.net/gh/BartoszWiszniewski/safe-fakes/SafeFakesBuilderLive.js");void 0;
 ```
 
 Jak dziala:
