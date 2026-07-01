@@ -7,11 +7,14 @@ const {
   buildCandidateCoords,
   selectSafeTargets,
   buildExcludedIds,
+  normalizeConfig,
+  parseForumConfiguration,
   applyBlocking,
   recordBlocking,
   getNextVillageUrl,
   chooseTarget,
   getServerTime,
+  filterByTroopConstraints,
   filterByArrivalTime,
   formatMessage,
 } = require("../SafeFakes");
@@ -230,6 +233,46 @@ test("buildCandidateCoords applies boundaries to player and tribe targets only",
   assert.deepEqual(result.map((target) => `${target.x}|${target.y}`), ["499|499"]);
 });
 
+test("normalizeConfig keeps Hermit option names and parses string booleans safely", () => {
+  const config = normalizeConfig({
+    allow_barbarians: true,
+    blocking_local: { time_s: "60", count: "2", block_players: "false" },
+    fill_exact: "true",
+  });
+
+  assert.equal(config.include_barbarians, true);
+  assert.equal(config.allow_barbarians, true);
+  assert.equal(config.fill_exact, true);
+  assert.equal(config.blocking_local.time_s, 60);
+  assert.equal(config.blocking_local.count, 2);
+  assert.equal(config.blocking_local.block_players, false);
+  assert.deepEqual(config.troops_templates.slice(0, 2), [{ spy: 1, ram: 1 }, { spy: 1, catapult: 1 }]);
+});
+
+test("buildCandidateCoords can include barbarian villages through the Hermit option name", () => {
+  const result = buildCandidateCoords({
+    config: normalizeConfig({
+      coords: "",
+      include_barbarians: true,
+      boundaries: [{ min_x: 480, max_x: 482, min_y: 490, max_y: 492 }],
+    }),
+    world,
+  });
+
+  assert.deepEqual(result.map((target) => `${target.x}|${target.y}`), ["481|491"]);
+});
+
+test("filterByTroopConstraints rejects noble targets outside world snob range", () => {
+  const result = filterByTroopConstraints(
+    [{ x: 3, y: 4 }, { x: 6, y: 8 }],
+    { snob: 1 },
+    { village: { x: 0, y: 0 } },
+    { snob: { max_dist: "7" } },
+  );
+
+  assert.deepEqual(result.map((target) => `${target.x}|${target.y}`), ["3|4"]);
+});
+
 test("blocking filters blocked villages and records new entries", () => {
   const storage = new Map();
   const config = {
@@ -312,6 +355,23 @@ test("filterByArrivalTime supports time-only ranges without tying them to local 
   assert.equal(result.length, 1);
 });
 
+test("filterByArrivalTime accepts compact ranges and does not skip barbarians for night bonus", () => {
+  const result = filterByArrivalTime(
+    [
+      { x: 1, y: 0, village: { playerId: "0" } },
+      { x: 1, y: 0, village: { playerId: "10" } },
+    ],
+    { ram: 1 },
+    { ram: { speed: "60" } },
+    { village: { x: 0, y: 0 } },
+    { night: { active: "1", start_hour: "22", end_hour: "6" } },
+    { date_ranges: ["22:00-22:01"], skip_night_bonus: true },
+    new Date(2026, 6, 2, 21, 0),
+  );
+
+  assert.deepEqual(result.map((target) => target.village.playerId), ["0"]);
+});
+
 test("getServerTime reads server date and time from DOM", () => {
   const documentRef = {
     querySelector(selector) {
@@ -349,5 +409,12 @@ test("formatMessage supports configured message overrides and placeholders", () 
   assert.equal(
     formatMessage({ messages: {} }, "no_targets", {}),
     "No targets. Set coords, players/player_ids, or allies/ally_tags/ally_ids.",
+  );
+});
+
+test("parseForumConfiguration reads JSON-like quickbar snippets", () => {
+  assert.deepEqual(
+    parseForumConfiguration("var HermitowskieFejki = {'coords':'480|491','include_barbarians':'true'}; $.ajax('x')"),
+    { coords: "480|491", include_barbarians: "true" },
   );
 });

@@ -49,11 +49,11 @@
     exclude_ally_tags: "",
     exclude_ally_ids: "",
     min_points: 0,
-    troops_templates: [{ ram: 1 }, { catapult: 1 }],
-    fill_troops: "axe,spy,light,catapult,spear",
+    troops_templates: [{ spy: 1, ram: 1 }, { spy: 1, catapult: 1 }, { ram: 1 }, { catapult: 1 }],
+    fill_troops: "spear,sword,axe,archer,spy,light,marcher,heavy,ram,catapult",
     fill_exact: false,
     safeguard: {},
-    allow_barbarians: false,
+    include_barbarians: false,
     date_ranges: [],
     skip_night_bonus: true,
     blocking_enabled: false,
@@ -76,13 +76,96 @@
     no_safe_targets: "No safe targets. Rejected: {rejected}.",
     no_timed_targets: "Safe targets exist, but none match the arrival time or night bonus filters.",
     no_unblocked_targets: "Safe targets exist, but all are blocked by blocking settings.",
+    no_snob_targets: "Safe targets exist, but all are outside noble range.",
+    troops_selected: "Troops selected. No target was configured.",
     selected_target: "Selected {target} ({player}) arrival {arrival}. Command was not sent automatically.",
     fetch_failed: "Cannot fetch {url}: HTTP {status}",
     not_enough_troops: "Not enough troops for configured fake templates.",
+    screen_redirect: "Redirecting to the rally point command screen.",
+    village_out_of_group: "Village is outside the current group. Redirecting to the next village.",
   };
 
   function getConfig() {
-    return Object.assign({}, DEFAULT_CONFIG, root.SafeFakes || {});
+    return normalizeConfig(root.SafeFakes || {});
+  }
+
+  async function getResolvedConfig() {
+    const userConfig = root.SafeFakes || {};
+    const forumConfig = normalizeForumConfig(userConfig.forum_config);
+    if (Object.prototype.hasOwnProperty.call(userConfig, "forum_config") && userConfig.forum_config && !forumConfig) {
+      throw new Error("forum_config: thread_id and spoiler_name are required");
+    }
+    if (!forumConfig) return normalizeConfig(userConfig);
+
+    const loaded = await loadForumConfig(forumConfig);
+    if (forumConfig.config_merge === "user+forum") {
+      const merged = Object.assign({}, userConfig);
+      for (const key of forumConfig.config_keys) merged[key] = loaded[key];
+      return normalizeConfig(merged);
+    }
+
+    return normalizeConfig(Object.assign({}, loaded, userConfig));
+  }
+
+  function normalizeConfig(userConfig = {}) {
+    const hasInclude = Object.prototype.hasOwnProperty.call(userConfig, "include_barbarians");
+    const hasAllow = Object.prototype.hasOwnProperty.call(userConfig, "allow_barbarians");
+    const config = Object.assign({}, DEFAULT_CONFIG, userConfig || {});
+
+    config.fill_exact = asBoolean(config.fill_exact, DEFAULT_CONFIG.fill_exact);
+    config.include_barbarians = asBoolean(
+      hasInclude ? userConfig.include_barbarians : hasAllow ? userConfig.allow_barbarians : config.include_barbarians,
+      DEFAULT_CONFIG.include_barbarians,
+    );
+    config.allow_barbarians = config.include_barbarians;
+    config.skip_night_bonus = asBoolean(config.skip_night_bonus, DEFAULT_CONFIG.skip_night_bonus);
+    config.blocking_enabled = asBoolean(config.blocking_enabled, DEFAULT_CONFIG.blocking_enabled);
+    config.changing_village_enabled = asBoolean(config.changing_village_enabled, DEFAULT_CONFIG.changing_village_enabled);
+    config.random_target = asBoolean(config.random_target, DEFAULT_CONFIG.random_target);
+    config.require_relations = asBoolean(config.require_relations, DEFAULT_CONFIG.require_relations);
+    config.load_map_frame = asBoolean(config.load_map_frame, DEFAULT_CONFIG.load_map_frame);
+    config.min_points = asNumber(config.min_points, DEFAULT_CONFIG.min_points);
+    config.map_frame_timeout_ms = asNumber(config.map_frame_timeout_ms, DEFAULT_CONFIG.map_frame_timeout_ms);
+    config.boundaries = Array.isArray(config.boundaries) ? config.boundaries : [];
+    config.date_ranges = Array.isArray(config.date_ranges) ? config.date_ranges : [];
+    config.troops_templates = Array.isArray(config.troops_templates) ? config.troops_templates : DEFAULT_CONFIG.troops_templates;
+    config.blocking_local = normalizeBlockingLocal(config.blocking_local);
+    config.blocking_global = Array.isArray(config.blocking_global)
+      ? config.blocking_global.map(normalizeBlockingGlobal).filter(Boolean)
+      : [];
+
+    return config;
+  }
+
+  function normalizeBlockingLocal(value) {
+    if (!value || typeof value !== "object") return null;
+    return {
+      time_s: asNumber(value.time_s, 0),
+      count: asNumber(value.count, 1),
+      block_players: asBoolean(value.block_players, false),
+      scope: value.scope === "instance" ? "instance" : null,
+    };
+  }
+
+  function normalizeBlockingGlobal(value) {
+    if (!value || typeof value !== "object" || value.name == null) return null;
+    return {
+      name: String(value.name),
+      time_s: asNumber(value.time_s, 0),
+      count: asNumber(value.count, 1),
+      block_players: asBoolean(value.block_players, false),
+    };
+  }
+
+  function asBoolean(value, defaultValue) {
+    if (typeof value === "boolean") return value;
+    if (typeof value === "string") return value.trim().toLowerCase() === "true";
+    return defaultValue;
+  }
+
+  function asNumber(value, defaultValue) {
+    const number = Number(value);
+    return Number.isFinite(number) ? number : defaultValue;
   }
 
   function formatMessage(config, key, values = {}) {
@@ -176,7 +259,12 @@
     }
 
     for (const village of world.villagesByCoord.values()) {
-      if (!targetPlayerIds.has(String(village.playerId))) continue;
+      if (
+        !(config.include_barbarians && String(village.playerId) === BARBARIAN_PLAYER_ID) &&
+        !targetPlayerIds.has(String(village.playerId))
+      ) {
+        continue;
+      }
       if (!isInsideBoundaries(village, config.boundaries)) continue;
       const coord = { x: village.x, y: village.y };
       const key = coordKey(coord);
@@ -353,6 +441,88 @@
     return response.text();
   }
 
+  function normalizeForumConfig(value) {
+    if (!value || typeof value !== "object") return null;
+    const threadId = asNumber(value.thread_id, null);
+    const spoilerName = typeof value.spoiler_name === "string" ? value.spoiler_name : null;
+    if (threadId == null || !spoilerName) return null;
+    return {
+      thread_id: threadId,
+      spoiler_name: spoilerName,
+      page: asNumber(value.page, 0),
+      time_to_live_s: asNumber(value.time_to_live_s, 3600),
+      config_merge: value.config_merge === "user+forum" ? "user+forum" : "forum+user",
+      config_keys: Array.isArray(value.config_keys) ? value.config_keys.map(String) : [],
+    };
+  }
+
+  async function loadForumConfig(forumConfig) {
+    const key = `SafeFakes.forum_config.${hashString(JSON.stringify(forumConfig))}`;
+    const cached = getCachedForumConfig(key);
+    if (cached) return cached;
+
+    const url = root.TribalWars
+      ? root.TribalWars.buildURL("GET", "forum", {
+        screenmode: "view_thread",
+        thread_id: forumConfig.thread_id,
+        page: forumConfig.page,
+      })
+      : `game.php?screen=forum&screenmode=view_thread&thread_id=${forumConfig.thread_id}&page=${forumConfig.page}`;
+    const html = await fetchText(url);
+    const documentRef = new root.DOMParser().parseFromString(html, "text/html");
+    const spoilers = Array.from(documentRef.querySelectorAll("div.spoiler > input"))
+      .filter((input) => input.value === forumConfig.spoiler_name)
+      .map((input) => input.parentElement);
+    if (spoilers.length !== 1) throw new Error("forum_config: invalid spoiler_name");
+
+    const snippets = spoilers[0].querySelectorAll("pre");
+    if (snippets.length !== 1) throw new Error("forum_config: invalid code snippet");
+
+    const config = parseForumConfiguration(snippets[0].textContent || snippets[0].innerText || "");
+    setCachedForumConfig(key, config, forumConfig.time_to_live_s);
+    return config;
+  }
+
+  function getCachedForumConfig(key) {
+    try {
+      const raw = getStorageValue(root.localStorage, key);
+      if (!raw) return null;
+      const cached = JSON.parse(raw);
+      return Number(cached.expiresAt || 0) > Date.now() ? cached.config : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function setCachedForumConfig(key, config, timeToLiveS) {
+    try {
+      setStorageValue(root.localStorage, key, JSON.stringify({
+        expiresAt: Date.now() + Number(timeToLiveS || 0) * 1000,
+        config,
+      }));
+    } catch (_) {
+      // localStorage can be unavailable in some browser privacy modes.
+    }
+  }
+
+  function parseForumConfiguration(text) {
+    let snippet = String(text || "").trim();
+    try {
+      return JSON.parse(snippet);
+    } catch (_) {
+      if (snippet.includes("HermitowskieFejki") || snippet.includes("SafeFakes")) {
+        snippet = snippet.slice(snippet.indexOf("=") + 1);
+      }
+      if (snippet.includes(";")) snippet = snippet.slice(0, snippet.indexOf(";"));
+      snippet = snippet
+        .replace(/'/g, "\"")
+        .replace(/\/\/.*/g, "")
+        .replace(/\/\*.*?\*\//gs, "")
+        .trim();
+      return JSON.parse(snippet);
+    }
+  }
+
   async function fetchWorld() {
     const [village, player, ally] = await Promise.all([
       fetchText("map/village.txt"),
@@ -513,7 +683,7 @@
   }
 
   function parseDateRange(text, now = new Date()) {
-    const parts = String(text || "").split(/\s+-\s+/);
+    const parts = String(text || "").split(/\s*-\s*/);
     if (parts.length !== 2) return null;
     return {
       timeOnly: isTimeOnly(parts[0]) && isTimeOnly(parts[1]),
@@ -559,6 +729,13 @@
     return start < end ? start <= hour && hour < end : hour >= start || hour < end;
   }
 
+  function filterByTroopConstraints(targets, troops, gameData, worldConfig) {
+    if (Number(troops.snob || 0) <= 0) return targets;
+    const maxDist = Number(worldConfig.snob && worldConfig.snob.max_dist);
+    if (!Number.isFinite(maxDist) || maxDist <= 0) return targets;
+    return targets.filter((target) => distance(gameData, target) < maxDist);
+  }
+
   function filterByArrivalTime(targets, troops, unitInfo, gameData, worldConfig, config, now = new Date()) {
     const onlyScouts = Object.keys(troops).every((unit) => unit === "spy" || Number(troops[unit] || 0) === 0);
     return targets
@@ -566,7 +743,10 @@
         arrival: getArrivalTime(gameData, target, troops, unitInfo, now),
       }))
       .filter((target) => isInDateRanges(target.arrival, config.date_ranges))
-      .filter((target) => !config.skip_night_bonus || onlyScouts || !isNightBonus(target.arrival, worldConfig));
+      .filter((target) => {
+        const barbarian = String(target.village && target.village.playerId) === BARBARIAN_PLAYER_ID;
+        return !config.skip_night_bonus || onlyScouts || barbarian || !isNightBonus(target.arrival, worldConfig);
+      });
   }
 
   function getBlockSpecs(config, gameData) {
@@ -733,18 +913,29 @@
   }
 
   async function run() {
-    const config = getConfig();
+    let config = getConfig();
     const documentRef = root.document;
     const gameData = root.game_data;
+    const jumpLink = documentRef.querySelector(".jump_link");
+    if (jumpLink && jumpLink.href) {
+      const error = new Error(formatMessage(config, "village_out_of_group"));
+      error.nextVillageUrl = jumpLink.href;
+      throw error;
+    }
 
-    if (!documentRef.querySelector("#command-data-form")) {
-      throw new Error(formatMessage(config, "rally_point_required"));
+    if ((gameData && gameData.screen && gameData.screen !== "place") || !documentRef.querySelector("#command-data-form")) {
+      const error = new Error(formatMessage(config, gameData && gameData.screen ? "screen_redirect" : "rally_point_required"));
+      error.nextVillageUrl = root.TribalWars
+        ? root.TribalWars.buildURL("GET", "place", { mode: "command" })
+        : "game.php?screen=place&mode=command";
+      throw error;
     }
     if (documentRef.querySelector("#troop_confirm_go") || documentRef.querySelector("#troop_confirm_submit")) {
       throw new Error(formatMessage(config, "confirmation_screen"));
     }
 
     try {
+      config = await getResolvedConfig();
       const [world, relations, unitInfo, worldConfig] = await Promise.all([
         fetchWorld(),
         fetchRelations(config),
@@ -752,11 +943,15 @@
         fetchXmlObject("interface.php?func=get_config"),
       ]);
 
+      const available = getAvailableTroops(documentRef, gameData, config.safeguard);
+      const troops = selectTroops(config, available, unitInfo, gameData, worldConfig);
+
       const coords = buildCandidateCoords({ config, world });
       if (coords.length === 0) {
-        throw new Error(formatMessage(config, "no_targets"));
+        fillTroopInputs(documentRef, troops);
+        showInfo(formatMessage(config, "troops_selected"));
+        return;
       }
-
       if (!relations && config.require_relations) {
         throw new Error(formatMessage(config, "missing_relations"));
       }
@@ -766,7 +961,7 @@
         world,
         relations: relations || {},
         currentPlayer: gameData.player,
-        allowBarbarians: config.allow_barbarians,
+        allowBarbarians: config.include_barbarians,
         minPoints: config.min_points,
         exclusions: buildExcludedIds({ config, world }),
       });
@@ -774,10 +969,13 @@
         throw new Error(formatMessage(config, "no_safe_targets", { rejected: summarizeRejected(safeTargets.rejected) }));
       }
 
-      const available = getAvailableTroops(documentRef, gameData, config.safeguard);
-      const troops = selectTroops(config, available, unitInfo, gameData, worldConfig);
+      const troopConstrainedTargets = filterByTroopConstraints(safeTargets.accepted, troops, gameData, worldConfig);
+      if (troopConstrainedTargets.length === 0) {
+        throw new Error(formatMessage(config, "no_snob_targets"));
+      }
+
       const timedTargets = filterByArrivalTime(
-        safeTargets.accepted,
+        troopConstrainedTargets,
         troops,
         unitInfo,
         gameData,
@@ -836,12 +1034,15 @@
     buildCandidateCoords,
     buildExcludedIds,
     selectSafeTargets,
+    normalizeConfig,
+    parseForumConfiguration,
     applyBlocking,
     recordBlocking,
     getNextVillageUrl,
     chooseTarget,
     formatMessage,
     getArrivalTime,
+    filterByTroopConstraints,
     filterByArrivalTime,
     getServerTime,
     run,

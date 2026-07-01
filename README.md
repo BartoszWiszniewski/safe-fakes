@@ -24,13 +24,15 @@ javascript:window.SafeFakes={
   "exclude_ally_ids":"",
   "min_points":0,
   "troops_templates":[
+    {"spy":1,"ram":1},
+    {"spy":1,"catapult":1},
     {"ram":1},
     {"catapult":1}
   ],
   "fill_troops":"axe,spy,light,catapult,spear",
   "fill_exact":false,
   "safeguard":{},
-  "allow_barbarians":false,
+  "include_barbarians":false,
   "date_ranges":[
     "02.07.2026 12:00 - 02.07.2026 23:59"
   ],
@@ -50,11 +52,15 @@ javascript:window.SafeFakes={
     "no_targets":"Brak celow. Podaj coords, players/player_ids albo allies/ally_tags/ally_ids.",
     "missing_relations":"Brak danych relacji z mapy. Zatrzymano wybor celu dla bezpieczenstwa.",
     "no_safe_targets":"Brak bezpiecznych celow. Odrzucono: {rejected}.",
+    "no_snob_targets":"Bezpieczne cele istnieja, ale wszystkie sa poza zasiegiem szlachcica.",
     "no_timed_targets":"Bezpieczne cele istnieja, ale zaden nie pasuje do czasu dojscia albo bonusu nocnego.",
     "no_unblocked_targets":"Bezpieczne cele istnieja, ale wszystkie sa zablokowane przez ustawienia blockingu.",
+    "troops_selected":"Wybrano samo wojsko. Nie ustawiono celu.",
     "selected_target":"Wybrano {target} ({player}), dojscie {arrival}. Rozkaz nie zostal wyslany automatycznie.",
     "fetch_failed":"Nie moge pobrac {url}: HTTP {status}",
-    "not_enough_troops":"Brakuje wojska do ustawionych szablonow fejka."
+    "not_enough_troops":"Brakuje wojska do ustawionych szablonow fejka.",
+    "screen_redirect":"Przechodze na plac, do widoku wysylania rozkazu.",
+    "village_out_of_group":"Wioska poza grupa. Przechodze do nastepnej wioski z grupy."
   }
 };$.getScript("https://bartoszwiszniewski.github.io/safe-fakes/SafeFakes.js");void 0;
 ```
@@ -96,6 +102,8 @@ window.SafeFakes = {
 
   // Szablony wojska. Skrypt bierze pierwszy szablon, na ktory masz wojsko.
   troops_templates: [
+    { spy: 1, ram: 1 },
+    { spy: 1, catapult: 1 },
     { ram: 1 },
     { catapult: 1 }
   ],
@@ -109,7 +117,7 @@ window.SafeFakes = {
   safeguard: {},
 
   // Barbarzynskie wioski bez wlasciciela. Domyslnie nie atakowac.
-  allow_barbarians: false,
+  include_barbarians: false,
 
   // Okna dojscia rozkazu. To jest czas dojscia, nie czas odpalenia skryptu.
   date_ranges: [
@@ -140,6 +148,18 @@ window.SafeFakes = {
   load_map_frame: true,
   map_frame_timeout_ms: 10000,
 
+  // Opcjonalnie: konfiguracja trzymana w spoilerze na forum.
+  // Lokalna konfiguracja nadpisuje forum przy config_merge:"forum+user".
+  forum_config: null,
+  // forum_config: {
+  //   thread_id: 12345,
+  //   spoiler_name: "SafeFakes",
+  //   page: 0,
+  //   time_to_live_s: 3600,
+  //   config_merge: "forum+user",
+  //   config_keys: []
+  // },
+
   // Polskie komunikaty.
   messages: {
     rally_point_required: "Uruchom skrypt na placu, w widoku wysylania rozkazu.",
@@ -147,11 +167,15 @@ window.SafeFakes = {
     no_targets: "Brak celow. Podaj coords, players/player_ids albo allies/ally_tags/ally_ids.",
     missing_relations: "Brak danych relacji z mapy. Zatrzymano wybor celu dla bezpieczenstwa.",
     no_safe_targets: "Brak bezpiecznych celow. Odrzucono: {rejected}.",
+    no_snob_targets: "Bezpieczne cele istnieja, ale wszystkie sa poza zasiegiem szlachcica.",
     no_timed_targets: "Bezpieczne cele istnieja, ale zaden nie pasuje do czasu dojscia albo bonusu nocnego.",
     no_unblocked_targets: "Bezpieczne cele istnieja, ale wszystkie sa zablokowane przez ustawienia blockingu.",
+    troops_selected: "Wybrano samo wojsko. Nie ustawiono celu.",
     selected_target: "Wybrano {target} ({player}), dojscie {arrival}. Rozkaz nie zostal wyslany automatycznie.",
     fetch_failed: "Nie moge pobrac {url}: HTTP {status}",
-    not_enough_troops: "Brakuje wojska do ustawionych szablonow fejka."
+    not_enough_troops: "Brakuje wojska do ustawionych szablonow fejka.",
+    screen_redirect: "Przechodze na plac, do widoku wysylania rozkazu.",
+    village_out_of_group: "Wioska poza grupa. Przechodze do nastepnej wioski z grupy."
   }
 };
 ```
@@ -175,7 +199,8 @@ window.SafeFakes = {
 - `fill_troops` - czym dopelniac fake pod limit swiata.
 - `fill_exact` - `false` dopelnia tylko tyle, ile trzeba; `true` bierze dostepny limit z `fill_troops`.
 - `safeguard` - wojsko, ktore ma zostac w wiosce.
-- `allow_barbarians` - `false` blokuje wioski barbarzynskie.
+- `include_barbarians` - `false` blokuje wioski barbarzynskie; `true` dodaje barbarzynskie do puli celow.
+- `allow_barbarians` - stary alias dla `include_barbarians`, zostawiony dla zgodnosci.
 - `date_ranges` - okna czasu dojscia.
 - `skip_night_bonus` - blokuje dojscie w bonus nocny.
 - `blocking_enabled` - wlacza blokowanie juz wybranych celow.
@@ -185,6 +210,7 @@ window.SafeFakes = {
 - `random_target` - wlacza losowanie celu.
 - `random_target_by` - sposob losowania: `village`, `player`, `ally`.
 - `require_relations` - zatrzymuje skrypt, jesli nie ma danych relacji.
+- `forum_config` - opcjonalne pobranie konfiguracji ze spoilera na forum.
 - `messages` - wlasne komunikaty.
 
 ## Losowanie celu
@@ -224,11 +250,29 @@ blocking_global: [
 - `block_players:true` - blokuje wszystkie wioski tego gracza
 - `blocking_local.scope:"instance"` - blokada lokalna dla tej konfiguracji, nie tylko aktualnej wioski
 
+## Forum Config
+
+`forum_config` pobiera konfiguracje ze spoilera na forum. W spoilerze musi byc jeden blok `pre` z JSON-em albo snippetem podobnym do bookmarkletu.
+
+```js
+forum_config: {
+  thread_id: 12345,
+  spoiler_name: "SafeFakes",
+  page: 0,
+  time_to_live_s: 3600,
+  config_merge: "forum+user",
+  config_keys: []
+}
+```
+
+- `forum+user` - forum jest baza, lokalne ustawienia nadpisuja forum
+- `user+forum` - lokalne ustawienia sa baza, a z forum nadpisywane sa tylko pola z `config_keys`
+
 ## Blokowane cele
 
 Skrypt odrzuca:
 
-- wioski barbarzynskie, jesli `allow_barbarians:false`
+- wioski barbarzynskie, jesli `include_barbarians:false`
 - twoje wioski
 - wioski graczy z twojego sojuszu
 - sprzymierzencow (`partner`)
@@ -236,6 +280,7 @@ Skrypt odrzuca:
 - znajomych
 - graczy nieatakowalnych
 - wioski ponizej `min_points`
+- cele poza zasiegiem szlachcica, gdy szablon zawiera `snob`
 - koordynaty, ktorych nie ma w aktualnych plikach mapy
 
 ## Czas dojscia
