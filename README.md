@@ -16,6 +16,11 @@ javascript:window.SafeFakes={
   "allies":"",
   "ally_tags":"",
   "ally_ids":"",
+  "exclude_players":"",
+  "exclude_player_ids":"",
+  "exclude_allies":"",
+  "exclude_ally_tags":"",
+  "exclude_ally_ids":"",
   "min_points":0,
   "troops_templates":[
     {"ram":1},
@@ -65,6 +70,13 @@ window.SafeFakes = {
   allies: "",
   ally_tags: "",
   ally_ids: "",
+
+  // Opcjonalnie: reczne wykluczenia z puli celow.
+  exclude_players: "",
+  exclude_player_ids: "",
+  exclude_allies: "",
+  exclude_ally_tags: "",
+  exclude_ally_ids: "",
 
   // Minimalna liczba punktow wioski celu. 0 = wylaczone.
   min_points: 0,
@@ -126,6 +138,11 @@ window.SafeFakes = {
 - `allies` - nazwy plemion po przecinku.
 - `ally_tags` - tagi plemion po przecinku.
 - `ally_ids` - ID plemion po przecinku.
+- `exclude_players` - nicki graczy do recznego wykluczenia.
+- `exclude_player_ids` - ID graczy do recznego wykluczenia.
+- `exclude_allies` - nazwy plemion do recznego wykluczenia.
+- `exclude_ally_tags` - tagi plemion do recznego wykluczenia.
+- `exclude_ally_ids` - ID plemion do recznego wykluczenia.
 - `min_points` - minimalne punkty celu.
 - `troops_templates` - lista szablonow wojska.
 - `fill_troops` - czym dopelniac fake pod limit swiata.

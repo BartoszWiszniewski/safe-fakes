@@ -6,6 +6,7 @@ const {
   parseWorld,
   buildCandidateCoords,
   selectSafeTargets,
+  buildExcludedIds,
   chooseTarget,
   getServerTime,
   filterByArrivalTime,
@@ -98,6 +99,29 @@ test("selectSafeTargets rejects villages below min_points", () => {
   assert.equal(result.rejected[0].reason, "not_enough_points");
 });
 
+test("selectSafeTargets rejects configured excluded players and allies", () => {
+  const exclusions = buildExcludedIds({
+    config: {
+      exclude_players: "Enemy",
+      exclude_player_ids: "",
+      exclude_allies: "",
+      exclude_ally_tags: "FR",
+      exclude_ally_ids: "",
+    },
+    world,
+  });
+
+  const result = selectSafeTargets({
+    coords: parseCoords("480|491 486|491"),
+    world,
+    relations: { allyRelations: {}, friends: {}, non_attackable_players: [] },
+    currentPlayer: { id: "11", ally: "100" },
+    exclusions,
+  });
+
+  assert.deepEqual(result.rejected.map((target) => target.reason), ["excluded_player", "excluded_ally"]);
+});
+
 test("buildCandidateCoords merges coords, players, and tribes", () => {
   const result = buildCandidateCoords({
     config: {
@@ -141,6 +165,20 @@ test("filterByArrivalTime calculates arrival from the provided base time", () =>
   assert.equal(result.length, 1);
   assert.equal(result[0].arrival.getHours(), 12);
   assert.equal(result[0].arrival.getMinutes(), 30);
+});
+
+test("filterByArrivalTime supports time-only ranges without tying them to local date", () => {
+  const result = filterByArrivalTime(
+    [{ x: 1, y: 0 }],
+    { ram: 1 },
+    { ram: { speed: "30" } },
+    { village: { x: 0, y: 0 } },
+    { night: { active: "0" } },
+    { date_ranges: ["12:29 - 12:31"], skip_night_bonus: true },
+    new Date(2026, 6, 2, 12, 0),
+  );
+
+  assert.equal(result.length, 1);
 });
 
 test("getServerTime reads server date and time from DOM", () => {

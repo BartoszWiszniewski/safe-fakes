@@ -42,6 +42,11 @@
     allies: "",
     ally_tags: "",
     ally_ids: "",
+    exclude_players: "",
+    exclude_player_ids: "",
+    exclude_allies: "",
+    exclude_ally_tags: "",
+    exclude_ally_ids: "",
     min_points: 0,
     troops_templates: [{ ram: 1 }, { catapult: 1 }],
     fill_troops: "axe,spy,light,catapult,spear",
@@ -150,6 +155,34 @@
     return coords;
   }
 
+  function buildExcludedIds({ config, world }) {
+    const playerNames = new Set(splitList(config.exclude_players).map((item) => item.toLowerCase()));
+    const playerIds = new Set(splitList(config.exclude_player_ids));
+    const allyNames = new Set(splitList(config.exclude_allies).map((item) => item.toLowerCase()));
+    const allyTags = new Set(splitList(config.exclude_ally_tags).map((item) => item.toLowerCase()));
+    const allyIds = new Set(splitList(config.exclude_ally_ids));
+
+    for (const ally of world.alliesById.values()) {
+      if (
+        allyNames.has(String(ally.name || "").toLowerCase()) ||
+        allyTags.has(String(ally.tag || "").toLowerCase()) ||
+        allyIds.has(String(ally.id))
+      ) {
+        allyIds.add(String(ally.id));
+      }
+    }
+
+    for (const player of world.playersById.values()) {
+      if (
+        playerNames.has(String(player.name || "").toLowerCase())
+      ) {
+        playerIds.add(String(player.id));
+      }
+    }
+
+    return { playerIds, allyIds };
+  }
+
   function selectSafeTargets({
     coords,
     world,
@@ -157,12 +190,13 @@
     currentPlayer,
     allowBarbarians = false,
     minPoints = 0,
+    exclusions = { playerIds: new Set(), allyIds: new Set() },
   }) {
     const accepted = [];
     const rejected = [];
 
     for (const coord of coords) {
-      const reason = getBlockReason(coord, world, relations, currentPlayer, allowBarbarians, minPoints);
+      const reason = getBlockReason(coord, world, relations, currentPlayer, allowBarbarians, minPoints, exclusions);
       if (reason) {
         rejected.push(Object.assign({}, coord, { reason }));
         continue;
@@ -181,7 +215,7 @@
     return { accepted, rejected };
   }
 
-  function getBlockReason(coord, world, relations, currentPlayer, allowBarbarians, minPoints) {
+  function getBlockReason(coord, world, relations, currentPlayer, allowBarbarians, minPoints, exclusions) {
     const village = world.villagesByCoord.get(coordKey(coord));
     if (!village) return "missing_village";
     if (village.playerId === BARBARIAN_PLAYER_ID) return allowBarbarians ? null : "barbarian";
@@ -190,6 +224,8 @@
 
     const player = world.playersById.get(village.playerId);
     if (!player) return "missing_player";
+    if (exclusions.playerIds.has(String(player.id))) return "excluded_player";
+    if (exclusions.allyIds.has(String(player.allyId))) return "excluded_ally";
 
     const currentAlly = String(currentPlayer.ally || NO_ALLY_ID);
     if (currentAlly !== NO_ALLY_ID && player.allyId === currentAlly) {
@@ -431,7 +467,15 @@
   function parseDateRange(text, now = new Date()) {
     const parts = String(text || "").split(/\s+-\s+/);
     if (parts.length !== 2) return null;
-    return [parseDatePart(parts[0], now), parseDatePart(parts[1], now)];
+    return {
+      timeOnly: isTimeOnly(parts[0]) && isTimeOnly(parts[1]),
+      from: parseDatePart(parts[0], now),
+      to: parseDatePart(parts[1], now),
+    };
+  }
+
+  function isTimeOnly(text) {
+    return /^\d{1,2}:\d{2}$/.test(String(text || "").trim());
   }
 
   function parseDatePart(text, now) {
@@ -448,8 +492,14 @@
     if (!ranges || ranges.length === 0) return true;
     return ranges
       .map((range) => parseDateRange(range))
-      .filter((range) => range && !Number.isNaN(range[0].getTime()) && !Number.isNaN(range[1].getTime()))
-      .some(([from, to]) => from <= date && date <= to);
+      .filter((range) => range && !Number.isNaN(range.from.getTime()) && !Number.isNaN(range.to.getTime()))
+      .some((range) => {
+        if (!range.timeOnly) return range.from <= date && date <= range.to;
+        const from = range.from.getHours() * 60 + range.from.getMinutes();
+        const to = range.to.getHours() * 60 + range.to.getMinutes();
+        const current = date.getHours() * 60 + date.getMinutes();
+        return from <= to ? from <= current && current <= to : current >= from || current <= to;
+      });
   }
 
   function isNightBonus(date, worldConfig) {
@@ -575,6 +625,7 @@
       currentPlayer: gameData.player,
       allowBarbarians: config.allow_barbarians,
       minPoints: config.min_points,
+      exclusions: buildExcludedIds({ config, world }),
     });
     if (safeTargets.accepted.length === 0) {
       throw new Error(formatMessage(config, "no_safe_targets", { rejected: summarizeRejected(safeTargets.rejected) }));
@@ -627,6 +678,7 @@
     parseCoords,
     parseWorld,
     buildCandidateCoords,
+    buildExcludedIds,
     selectSafeTargets,
     chooseTarget,
     formatMessage,
