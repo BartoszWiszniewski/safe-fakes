@@ -7,6 +7,9 @@ const {
   buildCandidateCoords,
   selectSafeTargets,
   buildExcludedIds,
+  applyBlocking,
+  recordBlocking,
+  getNextVillageUrl,
   chooseTarget,
   getServerTime,
   filterByArrivalTime,
@@ -138,6 +141,62 @@ test("buildCandidateCoords merges coords, players, and tribes", () => {
   assert.deepEqual(result.map((target) => `${target.x}|${target.y}`), ["499|499", "480|491"]);
 });
 
+test("buildCandidateCoords applies boundaries to player and tribe targets only", () => {
+  const result = buildCandidateCoords({
+    config: {
+      coords: "499|499",
+      players: "",
+      player_ids: "",
+      allies: "",
+      ally_tags: "ENM",
+      ally_ids: "",
+      boundaries: [{ min_x: 470, max_x: 475, min_y: 490, max_y: 495 }],
+    },
+    world,
+  });
+
+  assert.deepEqual(result.map((target) => `${target.x}|${target.y}`), ["499|499"]);
+});
+
+test("blocking filters blocked villages and records new entries", () => {
+  const storage = new Map();
+  const config = {
+    blocking_enabled: true,
+    blocking_local: { time_s: 60, count: 1, block_players: false },
+    blocking_global: [],
+  };
+  const gameData = { village: { id: 42 } };
+  const now = new Date(2026, 6, 2, 12, 0);
+  const targets = [
+    { x: 480, y: 491, village: { playerId: "10" } },
+    { x: 481, y: 491, village: { playerId: "20" } },
+  ];
+
+  recordBlocking(targets[0], config, gameData, storage, now);
+
+  assert.deepEqual(applyBlocking(targets, config, gameData, storage, now).map((target) => target.x), [481]);
+});
+
+test("blocking can block by player across villages", () => {
+  const storage = new Map();
+  const config = {
+    blocking_enabled: true,
+    blocking_local: { time_s: 60, count: 1, block_players: true },
+    blocking_global: [],
+  };
+  const gameData = { village: { id: 42 } };
+  const now = new Date(2026, 6, 2, 12, 0);
+  const targets = [
+    { x: 480, y: 491, village: { playerId: "10" } },
+    { x: 481, y: 491, village: { playerId: "10" } },
+    { x: 482, y: 491, village: { playerId: "20" } },
+  ];
+
+  recordBlocking(targets[0], config, gameData, storage, now);
+
+  assert.deepEqual(applyBlocking(targets, config, gameData, storage, now).map((target) => target.x), [482]);
+});
+
 test("chooseTarget can randomize by player or ally first", () => {
   const targets = [
     { x: 480, y: 491, village: { playerId: "10" }, player: { allyId: "200" } },
@@ -191,6 +250,18 @@ test("getServerTime reads server date and time from DOM", () => {
   };
 
   assert.equal(getServerTime(documentRef).getTime(), new Date(2026, 6, 2, 12, 34, 56).getTime());
+});
+
+test("getNextVillageUrl reads right-switch village url when changing village is enabled", () => {
+  const documentRef = {
+    querySelector(selector) {
+      if (selector === "#village_switch_right") return { href: "game.php?village=2&screen=place" };
+      return null;
+    },
+  };
+
+  assert.equal(getNextVillageUrl(documentRef, { changing_village_enabled: true }), "game.php?village=2&screen=place");
+  assert.equal(getNextVillageUrl(documentRef, { changing_village_enabled: false }), null);
 });
 
 test("formatMessage supports configured message overrides and placeholders", () => {

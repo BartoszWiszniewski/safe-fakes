@@ -42,6 +42,7 @@
     allies: "",
     ally_tags: "",
     ally_ids: "",
+    boundaries: [],
     exclude_players: "",
     exclude_player_ids: "",
     exclude_allies: "",
@@ -55,6 +56,10 @@
     allow_barbarians: false,
     date_ranges: [],
     skip_night_bonus: true,
+    blocking_enabled: false,
+    blocking_local: null,
+    blocking_global: [],
+    changing_village_enabled: true,
     random_target: true,
     random_target_by: "village",
     require_relations: true,
@@ -70,6 +75,7 @@
     missing_relations: "Relation data is unavailable. Target selection stopped for safety.",
     no_safe_targets: "No safe targets. Rejected: {rejected}.",
     no_timed_targets: "Safe targets exist, but none match the arrival time or night bonus filters.",
+    no_unblocked_targets: "Safe targets exist, but all are blocked by blocking settings.",
     selected_target: "Selected {target} ({player}) arrival {arrival}. Command was not sent automatically.",
     fetch_failed: "Cannot fetch {url}: HTTP {status}",
     not_enough_troops: "Not enough troops for configured fake templates.",
@@ -144,6 +150,7 @@
 
     for (const village of world.villagesByCoord.values()) {
       if (!targetPlayerIds.has(String(village.playerId))) continue;
+      if (!isInsideBoundaries(village, config.boundaries)) continue;
       const coord = { x: village.x, y: village.y };
       const key = coordKey(coord);
       if (!seen.has(key)) {
@@ -153,6 +160,20 @@
     }
 
     return coords;
+  }
+
+  function isInsideBoundaries(village, boundaries) {
+    if (!boundaries || boundaries.length === 0) return true;
+    return boundaries.some((boundary) => {
+      if (boundary && boundary.r != null) {
+        const dx = Number(boundary.x) - village.x;
+        const dy = Number(boundary.y) - village.y;
+        return dx * dx + dy * dy <= Number(boundary.r) * Number(boundary.r);
+      }
+      return boundary &&
+        Number(boundary.min_x) <= village.x && village.x <= Number(boundary.max_x) &&
+        Number(boundary.min_y) <= village.y && village.y <= Number(boundary.max_y);
+    });
   }
 
   function buildExcludedIds({ config, world }) {
@@ -521,6 +542,94 @@
       .filter((target) => !config.skip_night_bonus || onlyScouts || !isNightBonus(target.arrival, worldConfig));
   }
 
+  function getBlockSpecs(config, gameData) {
+    if (!config.blocking_enabled) return [];
+    const specs = [];
+    if (config.blocking_local) {
+      specs.push({
+        key: config.blocking_local.scope === "instance"
+          ? `SafeFakes.blocking.local.instance.${hashString(JSON.stringify(Object.assign({}, config, { messages: undefined })))}`
+          : `SafeFakes.blocking.local.${gameData.village.id}`,
+        time_s: Number(config.blocking_local.time_s || 0),
+        count: Number(config.blocking_local.count || 1),
+        block_players: Boolean(config.blocking_local.block_players),
+      });
+    }
+    for (const entry of config.blocking_global || []) {
+      specs.push({
+        key: `SafeFakes.blocking.global.${entry.name}`,
+        time_s: Number(entry.time_s || 0),
+        count: Number(entry.count || 1),
+        block_players: Boolean(entry.block_players),
+      });
+    }
+    return specs;
+  }
+
+  function applyBlocking(targets, config, gameData, storage = root.localStorage, now = new Date()) {
+    let result = targets;
+    for (const spec of getBlockSpecs(config, gameData)) {
+      const entries = getBlockEntries(storage, spec.key, now);
+      const villageCounts = new Map();
+      const playerCounts = new Map();
+      for (const entry of entries) {
+        const villageKey = `${entry.x}|${entry.y}`;
+        villageCounts.set(villageKey, (villageCounts.get(villageKey) || 0) + 1);
+        if (spec.block_players && entry.playerId !== BARBARIAN_PLAYER_ID) {
+          playerCounts.set(entry.playerId, (playerCounts.get(entry.playerId) || 0) + 1);
+        }
+      }
+      result = result.filter((target) => {
+        if (spec.block_players) {
+          return (playerCounts.get(String(target.village && target.village.playerId)) || 0) < spec.count;
+        }
+        return (villageCounts.get(coordKey(target)) || 0) < spec.count;
+      });
+    }
+    return result;
+  }
+
+  function recordBlocking(target, config, gameData, storage = root.localStorage, now = new Date()) {
+    for (const spec of getBlockSpecs(config, gameData)) {
+      const entries = getBlockEntries(storage, spec.key, now);
+      entries.push({
+        expiresAt: now.getTime() + spec.time_s * 1000,
+        x: target.x,
+        y: target.y,
+        playerId: String(target.village && target.village.playerId || ""),
+      });
+      setStorageValue(storage, spec.key, JSON.stringify(entries));
+    }
+  }
+
+  function getBlockEntries(storage, key, now) {
+    if (!storage) return [];
+    try {
+      const raw = getStorageValue(storage, key);
+      const entries = raw ? JSON.parse(raw) : [];
+      return entries.filter((entry) => Number(entry.expiresAt || 0) >= now.getTime());
+    } catch (_) {
+      return [];
+    }
+  }
+
+  function getStorageValue(storage, key) {
+    return typeof storage.getItem === "function" ? storage.getItem(key) : storage.get(key);
+  }
+
+  function setStorageValue(storage, key, value) {
+    if (typeof storage.setItem === "function") storage.setItem(key, value);
+    else storage.set(key, value);
+  }
+
+  function hashString(text) {
+    let hash = 0;
+    for (let i = 0; i < text.length; i++) {
+      hash = ((hash << 5) - hash + text.charCodeAt(i)) | 0;
+    }
+    return Math.abs(hash).toString(36);
+  }
+
   function getServerTime(documentRef) {
     const dateNode = documentRef.querySelector("#serverDate");
     const timeNode = documentRef.querySelector("#serverTime");
@@ -530,6 +639,12 @@
     return match
       ? new Date(Number(match[3]), Number(match[2]) - 1, Number(match[1]), Number(match[4]), Number(match[5]), Number(match[6] || 0))
       : new Date();
+  }
+
+  function getNextVillageUrl(documentRef, config) {
+    if (!config.changing_village_enabled) return null;
+    const link = documentRef.querySelector("#village_switch_right");
+    return link && link.href ? link.href : null;
   }
 
   function fillTroopInputs(documentRef, troops) {
@@ -602,58 +717,69 @@
       throw new Error(formatMessage(config, "confirmation_screen"));
     }
 
-    const [world, relations, unitInfo, worldConfig] = await Promise.all([
-      fetchWorld(),
-      fetchRelations(config),
-      fetchXmlObject("interface.php?func=get_unit_info"),
-      fetchXmlObject("interface.php?func=get_config"),
-    ]);
+    try {
+      const [world, relations, unitInfo, worldConfig] = await Promise.all([
+        fetchWorld(),
+        fetchRelations(config),
+        fetchXmlObject("interface.php?func=get_unit_info"),
+        fetchXmlObject("interface.php?func=get_config"),
+      ]);
 
-    const coords = buildCandidateCoords({ config, world });
-    if (coords.length === 0) {
-      throw new Error(formatMessage(config, "no_targets"));
+      const coords = buildCandidateCoords({ config, world });
+      if (coords.length === 0) {
+        throw new Error(formatMessage(config, "no_targets"));
+      }
+
+      if (!relations && config.require_relations) {
+        throw new Error(formatMessage(config, "missing_relations"));
+      }
+
+      const safeTargets = selectSafeTargets({
+        coords,
+        world,
+        relations: relations || {},
+        currentPlayer: gameData.player,
+        allowBarbarians: config.allow_barbarians,
+        minPoints: config.min_points,
+        exclusions: buildExcludedIds({ config, world }),
+      });
+      if (safeTargets.accepted.length === 0) {
+        throw new Error(formatMessage(config, "no_safe_targets", { rejected: summarizeRejected(safeTargets.rejected) }));
+      }
+
+      const available = getAvailableTroops(documentRef, gameData, config.safeguard);
+      const troops = selectTroops(config, available, unitInfo, gameData, worldConfig);
+      const timedTargets = filterByArrivalTime(
+        safeTargets.accepted,
+        troops,
+        unitInfo,
+        gameData,
+        worldConfig,
+        config,
+        getServerTime(documentRef),
+      );
+      if (timedTargets.length === 0) {
+        throw new Error(formatMessage(config, "no_timed_targets"));
+      }
+
+      const unblockedTargets = applyBlocking(timedTargets, config, gameData);
+      if (unblockedTargets.length === 0) {
+        throw new Error(formatMessage(config, "no_unblocked_targets"));
+      }
+
+      const target = chooseTarget(unblockedTargets, config);
+      recordBlocking(target, config, gameData);
+      fillTroopInputs(documentRef, troops);
+      fillTargetInputs(documentRef, target);
+      showInfo(formatMessage(config, "selected_target", {
+        target: coordKey(target),
+        player: target.player ? target.player.name : "no player",
+        arrival: formatArrival(target.arrival),
+      }));
+    } catch (error) {
+      error.nextVillageUrl = getNextVillageUrl(documentRef, config);
+      throw error;
     }
-
-    if (!relations && config.require_relations) {
-      throw new Error(formatMessage(config, "missing_relations"));
-    }
-
-    const safeTargets = selectSafeTargets({
-      coords,
-      world,
-      relations: relations || {},
-      currentPlayer: gameData.player,
-      allowBarbarians: config.allow_barbarians,
-      minPoints: config.min_points,
-      exclusions: buildExcludedIds({ config, world }),
-    });
-    if (safeTargets.accepted.length === 0) {
-      throw new Error(formatMessage(config, "no_safe_targets", { rejected: summarizeRejected(safeTargets.rejected) }));
-    }
-
-    const available = getAvailableTroops(documentRef, gameData, config.safeguard);
-    const troops = selectTroops(config, available, unitInfo, gameData, worldConfig);
-    const timedTargets = filterByArrivalTime(
-      safeTargets.accepted,
-      troops,
-      unitInfo,
-      gameData,
-      worldConfig,
-      config,
-      getServerTime(documentRef),
-    );
-    if (timedTargets.length === 0) {
-      throw new Error(formatMessage(config, "no_timed_targets"));
-    }
-
-    const target = chooseTarget(timedTargets, config);
-    fillTroopInputs(documentRef, troops);
-    fillTargetInputs(documentRef, target);
-    showInfo(formatMessage(config, "selected_target", {
-      target: coordKey(target),
-      player: target.player ? target.player.name : "no player",
-      arrival: formatArrival(target.arrival),
-    }));
   }
 
   function summarizeRejected(rejected) {
@@ -672,6 +798,9 @@
     if (root && root.UI && root.UI.ErrorMessage) root.UI.ErrorMessage(message);
     else if (root && root.alert) root.alert(message);
     else console.error(message);
+    if (error && error.nextVillageUrl && root.location) {
+      root.location.href = error.nextVillageUrl;
+    }
   }
 
   return {
@@ -680,6 +809,9 @@
     buildCandidateCoords,
     buildExcludedIds,
     selectSafeTargets,
+    applyBlocking,
+    recordBlocking,
+    getNextVillageUrl,
     chooseTarget,
     formatMessage,
     getArrivalTime,

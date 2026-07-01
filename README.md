@@ -16,6 +16,7 @@ javascript:window.SafeFakes={
   "allies":"",
   "ally_tags":"",
   "ally_ids":"",
+  "boundaries":[],
   "exclude_players":"",
   "exclude_player_ids":"",
   "exclude_allies":"",
@@ -34,6 +35,10 @@ javascript:window.SafeFakes={
     "02.07.2026 12:00 - 02.07.2026 23:59"
   ],
   "skip_night_bonus":true,
+  "blocking_enabled":false,
+  "blocking_local":null,
+  "blocking_global":[],
+  "changing_village_enabled":true,
   "random_target":true,
   "random_target_by":"village",
   "require_relations":true,
@@ -46,6 +51,7 @@ javascript:window.SafeFakes={
     "missing_relations":"Brak danych relacji z mapy. Zatrzymano wybor celu dla bezpieczenstwa.",
     "no_safe_targets":"Brak bezpiecznych celow. Odrzucono: {rejected}.",
     "no_timed_targets":"Bezpieczne cele istnieja, ale zaden nie pasuje do czasu dojscia albo bonusu nocnego.",
+    "no_unblocked_targets":"Bezpieczne cele istnieja, ale wszystkie sa zablokowane przez ustawienia blockingu.",
     "selected_target":"Wybrano {target} ({player}), dojscie {arrival}. Rozkaz nie zostal wyslany automatycznie.",
     "fetch_failed":"Nie moge pobrac {url}: HTTP {status}",
     "not_enough_troops":"Brakuje wojska do ustawionych szablonow fejka."
@@ -70,6 +76,13 @@ window.SafeFakes = {
   allies: "",
   ally_tags: "",
   ally_ids: "",
+
+  // Opcjonalnie: ograniczenie puli z graczy/plemion do obszaru.
+  // Reczne coords omijaja boundaries, tak jak w Hermitowskich Fejkach.
+  boundaries: [
+    // { min_x: 490, max_x: 510, min_y: 490, max_y: 510 },
+    // { x: 500, y: 500, r: 20 }
+  ],
 
   // Opcjonalnie: reczne wykluczenia z puli celow.
   exclude_players: "",
@@ -106,6 +119,18 @@ window.SafeFakes = {
   // Omijaj bonus nocny, chyba ze idzie sam zwiad.
   skip_night_bonus: true,
 
+  // Blokowanie ponownego wyboru celu po uzyciu.
+  blocking_enabled: false,
+  blocking_local: null,
+  // Przyklad lokalny:
+  // blocking_local: { time_s: 3600, count: 1, block_players: false },
+  blocking_global: [
+    // { name: "moje_fejki", time_s: 3600, count: 1, block_players: true }
+  ],
+
+  // Jesli w tej wiosce nie ma celu/wojska, przejdz do nastepnej wioski z grupy.
+  changing_village_enabled: true,
+
   // Losowanie celu.
   random_target: true,
   random_target_by: "village",
@@ -123,6 +148,7 @@ window.SafeFakes = {
     missing_relations: "Brak danych relacji z mapy. Zatrzymano wybor celu dla bezpieczenstwa.",
     no_safe_targets: "Brak bezpiecznych celow. Odrzucono: {rejected}.",
     no_timed_targets: "Bezpieczne cele istnieja, ale zaden nie pasuje do czasu dojscia albo bonusu nocnego.",
+    no_unblocked_targets: "Bezpieczne cele istnieja, ale wszystkie sa zablokowane przez ustawienia blockingu.",
     selected_target: "Wybrano {target} ({player}), dojscie {arrival}. Rozkaz nie zostal wyslany automatycznie.",
     fetch_failed: "Nie moge pobrac {url}: HTTP {status}",
     not_enough_troops: "Brakuje wojska do ustawionych szablonow fejka."
@@ -138,6 +164,7 @@ window.SafeFakes = {
 - `allies` - nazwy plemion po przecinku.
 - `ally_tags` - tagi plemion po przecinku.
 - `ally_ids` - ID plemion po przecinku.
+- `boundaries` - ogranicza cele z graczy/plemion do boxa albo kola.
 - `exclude_players` - nicki graczy do recznego wykluczenia.
 - `exclude_player_ids` - ID graczy do recznego wykluczenia.
 - `exclude_allies` - nazwy plemion do recznego wykluczenia.
@@ -151,6 +178,10 @@ window.SafeFakes = {
 - `allow_barbarians` - `false` blokuje wioski barbarzynskie.
 - `date_ranges` - okna czasu dojscia.
 - `skip_night_bonus` - blokuje dojscie w bonus nocny.
+- `blocking_enabled` - wlacza blokowanie juz wybranych celow.
+- `blocking_local` - blokada lokalna dla aktualnej wioski albo instancji ustawien.
+- `blocking_global` - blokada wspoldzielona po nazwie.
+- `changing_village_enabled` - po braku celu/wojska przechodzi do nastepnej wioski.
 - `random_target` - wlacza losowanie celu.
 - `random_target_by` - sposob losowania: `village`, `player`, `ally`.
 - `require_relations` - zatrzymuje skrypt, jesli nie ma danych relacji.
@@ -163,6 +194,35 @@ window.SafeFakes = {
 - `"village"` - losuje z wszystkich bezpiecznych wiosek
 - `"player"` - najpierw losuje gracza, potem jedna z jego wiosek
 - `"ally"` - najpierw losuje plemie, potem jedna z jego wiosek
+
+## Boundaries
+
+`boundaries` ogranicza pule budowana z `players`, `player_ids`, `allies`, `ally_tags`, `ally_ids`. Reczne `coords` zawsze zostaja w puli, tak jak w Hermitowskich Fejkach.
+
+```js
+boundaries: [
+  { min_x: 490, max_x: 510, min_y: 490, max_y: 510 },
+  { x: 500, y: 500, r: 20 }
+]
+```
+
+## Blocking
+
+Blocking zapisuje ostatnio wybrane cele w `localStorage` i odrzuca je przez ustawiony czas.
+
+```js
+blocking_enabled: true,
+blocking_local: { time_s: 3600, count: 1, block_players: false },
+blocking_global: [
+  { name: "fake_pack_1", time_s: 3600, count: 1, block_players: true }
+]
+```
+
+- `time_s` - ile sekund cel ma byc zablokowany
+- `count` - ile razy dany cel/gracz moze przejsc zanim zostanie odrzucony
+- `block_players:false` - blokuje konkretna wioske
+- `block_players:true` - blokuje wszystkie wioski tego gracza
+- `blocking_local.scope:"instance"` - blokada lokalna dla tej konfiguracji, nie tylko aktualnej wioski
 
 ## Blokowane cele
 
