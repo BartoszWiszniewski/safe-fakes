@@ -116,6 +116,33 @@
     return String(value || "").split(",").map((item) => item.trim()).filter(Boolean);
   }
 
+  function idIn(collection, id) {
+    const key = String(id);
+    if (!collection) return false;
+    if (collection instanceof Map) return collection.has(key) || collection.has(Number(key));
+    if (Array.isArray(collection) || (typeof collection[Symbol.iterator] === "function" && typeof collection !== "string")) {
+      return Array.from(collection).some((value) => String(value) === key);
+    }
+    if (typeof collection === "object") return Boolean(collection[key]);
+    return String(collection) === key;
+  }
+
+  function valueById(collection, id) {
+    const key = String(id);
+    if (!collection) return undefined;
+    if (collection instanceof Map) return collection.get(key) || collection.get(Number(key));
+    return typeof collection === "object" ? collection[key] : undefined;
+  }
+
+  function normalizeIdList(value) {
+    if (!value) return [];
+    if (Array.isArray(value) || (typeof value[Symbol.iterator] === "function" && typeof value !== "string")) {
+      return Array.from(value).map(String);
+    }
+    if (typeof value === "object") return Object.keys(value).filter((key) => value[key]);
+    return splitList(value);
+  }
+
   function buildCandidateCoords({ config, world }) {
     const coords = parseCoords(config.coords);
     const seen = new Set(coords.map(coordKey));
@@ -255,15 +282,15 @@
 
     if (!relations) return "missing_relations";
 
-    if ((relations.non_attackable_players || []).includes(village.playerId)) {
+    if (idIn(relations.non_attackable_players, village.playerId)) {
       return "non_attackable";
     }
 
-    if (relations.friends && relations.friends[village.playerId]) {
+    if (idIn(relations.friends, village.playerId)) {
       return "friend";
     }
 
-    const relation = relations.allyRelations && relations.allyRelations[player.allyId];
+    const relation = String(valueById(relations.allyRelations, player.allyId) || "").toLowerCase();
     if (relation === "partner") return "partner";
     if (relation === "nap") return "nap";
 
@@ -338,9 +365,9 @@
   function snapshotRelations(twMap) {
     if (!twMap) return null;
     return {
-      allyRelations: Object.assign({}, twMap.allyRelations || {}),
-      friends: Object.assign({}, twMap.friends || {}),
-      non_attackable_players: Array.from(twMap.non_attackable_players || []),
+      allyRelations: twMap.allyRelations || {},
+      friends: twMap.friends || {},
+      non_attackable_players: normalizeIdList(twMap.non_attackable_players),
     };
   }
 

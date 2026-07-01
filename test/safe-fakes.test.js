@@ -35,11 +35,11 @@ const world = {
     ["15", { id: "15", name: "FriendPlayer", allyId: "500" }],
   ]),
   alliesById: new Map([
-    ["100", { id: "100", tag: "MY" }],
-    ["200", { id: "200", tag: "ENM" }],
-    ["300", { id: "300", tag: "NAP" }],
-    ["400", { id: "400", tag: "ALLY" }],
-    ["500", { id: "500", tag: "FR" }],
+    ["100", { id: "100", name: "Mine", tag: "MY" }],
+    ["200", { id: "200", name: "Enemies", tag: "ENM" }],
+    ["300", { id: "300", name: "Nap Tribe", tag: "NAP" }],
+    ["400", { id: "400", name: "Partner Tribe", tag: "ALLY" }],
+    ["500", { id: "500", name: "Friends", tag: "FR" }],
   ]),
 };
 
@@ -125,6 +125,21 @@ test("selectSafeTargets rejects configured excluded players and allies", () => {
   assert.deepEqual(result.rejected.map((target) => target.reason), ["excluded_player", "excluded_ally"]);
 });
 
+test("selectSafeTargets handles numeric relation ids from the game client", () => {
+  const result = selectSafeTargets({
+    coords: parseCoords("480|491 486|491"),
+    world,
+    relations: {
+      allyRelations: new Map([[200, "nap"]]),
+      friends: new Set([15]),
+      non_attackable_players: [10],
+    },
+    currentPlayer: { id: 11, ally: 100 },
+  });
+
+  assert.deepEqual(result.rejected.map((target) => target.reason), ["non_attackable", "friend"]);
+});
+
 test("buildCandidateCoords merges coords, players, and tribes", () => {
   const result = buildCandidateCoords({
     config: {
@@ -139,6 +154,63 @@ test("buildCandidateCoords merges coords, players, and tribes", () => {
   });
 
   assert.deepEqual(result.map((target) => `${target.x}|${target.y}`), ["499|499", "480|491"]);
+});
+
+test("buildCandidateCoords resolves every player and tribe selector exactly", () => {
+  const cases = [
+    [{ players: "Enemy" }, ["480|491"]],
+    [{ player_ids: "10" }, ["480|491"]],
+    [{ allies: "Enemies" }, ["480|491"]],
+    [{ ally_tags: "ENM" }, ["480|491"]],
+    [{ ally_ids: "200" }, ["480|491"]],
+  ];
+
+  for (const [override, expected] of cases) {
+    const result = buildCandidateCoords({
+      config: Object.assign({
+        coords: "",
+        players: "",
+        player_ids: "",
+        allies: "",
+        ally_tags: "",
+        ally_ids: "",
+      }, override),
+      world,
+    });
+
+    assert.deepEqual(result.map((target) => `${target.x}|${target.y}`), expected);
+  }
+});
+
+test("player and tribe selectors still pass through relation safety filters", () => {
+  const coords = buildCandidateCoords({
+    config: {
+      coords: "",
+      players: "NapPlayer",
+      player_ids: "",
+      allies: "",
+      ally_tags: "ALLY",
+      ally_ids: "",
+    },
+    world,
+  });
+
+  const result = selectSafeTargets({
+    coords,
+    world,
+    relations: {
+      allyRelations: {
+        300: "nap",
+        400: "partner",
+      },
+      friends: {},
+      non_attackable_players: [],
+    },
+    currentPlayer: { id: "11", ally: "100" },
+  });
+
+  assert.equal(result.accepted.length, 0);
+  assert.deepEqual(result.rejected.map((target) => target.reason), ["nap", "partner"]);
 });
 
 test("buildCandidateCoords applies boundaries to player and tribe targets only", () => {

@@ -6,7 +6,7 @@ Skrypt nie wysyla rozkazu automatycznie.
 
 ## Gotowy skrypt do paska
 
-Podmien tylko adres `https://TWOJ_LOGIN.github.io/TWOJE_REPO/SafeFakes.js` na adres swojego pliku z GitHub Pages.
+Gotowy adres skryptu: `https://bartoszwiszniewski.github.io/safe-fakes/SafeFakes.js`.
 
 ```js
 javascript:window.SafeFakes={
@@ -56,7 +56,7 @@ javascript:window.SafeFakes={
     "fetch_failed":"Nie moge pobrac {url}: HTTP {status}",
     "not_enough_troops":"Brakuje wojska do ustawionych szablonow fejka."
   }
-};$.getScript("https://TWOJ_LOGIN.github.io/TWOJE_REPO/SafeFakes.js");void 0;
+};$.getScript("https://bartoszwiszniewski.github.io/safe-fakes/SafeFakes.js");void 0;
 ```
 
 ## Pelna konfiguracja
