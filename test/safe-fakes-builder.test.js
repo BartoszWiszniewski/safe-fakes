@@ -223,6 +223,6 @@ test("buildBookmarklet defaults to the public jsDelivr SafeFakes URL", () => {
 
   assert.match(
     bookmarklet,
-    /\$\.getScript\("https:\/\/cdn\.jsdelivr\.net\/gh\/BartoszWiszniewski\/safe-fakes@main\/SafeFakes\.js"\);void 0;$/,
+    /\$\.getScript\("https:\/\/cdn\.jsdelivr\.net\/gh\/BartoszWiszniewski\/safe-fakes\/SafeFakes\.js"\);void 0;$/,
   );
 });
