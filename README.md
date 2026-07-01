@@ -22,7 +22,20 @@ javascript:window.SafeFakes={
   "exclude_allies":"",
   "exclude_ally_tags":"",
   "exclude_ally_ids":"",
+  "exclude_coords":"",
   "min_points":0,
+  "max_points":0,
+  "min_distance":0,
+  "max_distance":0,
+  "target_limit_per_player":0,
+  "target_limit_per_ally":0,
+  "target_weights":{
+    "players":{},
+    "allies":{},
+    "coords":{}
+  },
+  "preview_mode":false,
+  "debug_report":false,
   "troops_templates":[
     {"spy":1,"ram":1},
     {"spy":1,"catapult":1},
@@ -53,9 +66,12 @@ javascript:window.SafeFakes={
     "missing_relations":"Brak danych relacji z mapy. Zatrzymano wybor celu dla bezpieczenstwa.",
     "no_safe_targets":"Brak bezpiecznych celow. Odrzucono: {rejected}.",
     "no_snob_targets":"Bezpieczne cele istnieja, ale wszystkie sa poza zasiegiem szlachcica.",
+    "no_distance_targets":"Bezpieczne cele istnieja, ale zaden nie pasuje do filtrow dystansu.",
+    "no_limited_targets":"Bezpieczne cele istnieja, ale wszystkie odpadly przez limity na gracza albo plemie.",
     "no_timed_targets":"Bezpieczne cele istnieja, ale zaden nie pasuje do czasu dojscia albo bonusu nocnego.",
     "no_unblocked_targets":"Bezpieczne cele istnieja, ale wszystkie sa zablokowane przez ustawienia blockingu.",
     "troops_selected":"Wybrano samo wojsko. Nie ustawiono celu.",
+    "preview_target":"Podglad {target} ({player}) [{ally}], dojscie {arrival}. Odrzucono: {rejected}.",
     "selected_target":"Wybrano {target} ({player}), dojscie {arrival}. Rozkaz nie zostal wyslany automatycznie.",
     "fetch_failed":"Nie moge pobrac {url}: HTTP {status}",
     "not_enough_troops":"Brakuje wojska do ustawionych szablonow fejka.",
@@ -96,9 +112,39 @@ window.SafeFakes = {
   exclude_allies: "",
   exclude_ally_tags: "",
   exclude_ally_ids: "",
+  exclude_coords: "",
 
-  // Minimalna liczba punktow wioski celu. 0 = wylaczone.
+  // Punkty i dystans celu. 0 = wylaczone.
   min_points: 0,
+  max_points: 0,
+  min_distance: 0,
+  max_distance: 0,
+
+  // Limity w aktualnej puli po filtrach bezpieczenstwa.
+  // 0 = wylaczone.
+  target_limit_per_player: 0,
+  target_limit_per_ally: 0,
+
+  // Wagi losowania. Kluczem moze byc ID albo nazwa/tag.
+  target_weights: {
+    players: {
+      // EnemyNick: 3,
+      // "123456": 5
+    },
+    allies: {
+      // ENM: 2,
+      // "999": 4
+    },
+    coords: {
+      // "500|500": 3
+    }
+  },
+
+  // Podglad pokazuje wybrany cel bez wpisywania formularza.
+  preview_mode: false,
+
+  // Raport w konsoli: ile celow bylo w kazdym etapie filtrowania.
+  debug_report: false,
 
   // Szablony wojska. Skrypt bierze pierwszy szablon, na ktory masz wojsko.
   troops_templates: [
@@ -168,9 +214,12 @@ window.SafeFakes = {
     missing_relations: "Brak danych relacji z mapy. Zatrzymano wybor celu dla bezpieczenstwa.",
     no_safe_targets: "Brak bezpiecznych celow. Odrzucono: {rejected}.",
     no_snob_targets: "Bezpieczne cele istnieja, ale wszystkie sa poza zasiegiem szlachcica.",
+    no_distance_targets: "Bezpieczne cele istnieja, ale zaden nie pasuje do filtrow dystansu.",
+    no_limited_targets: "Bezpieczne cele istnieja, ale wszystkie odpadly przez limity na gracza albo plemie.",
     no_timed_targets: "Bezpieczne cele istnieja, ale zaden nie pasuje do czasu dojscia albo bonusu nocnego.",
     no_unblocked_targets: "Bezpieczne cele istnieja, ale wszystkie sa zablokowane przez ustawienia blockingu.",
     troops_selected: "Wybrano samo wojsko. Nie ustawiono celu.",
+    preview_target: "Podglad {target} ({player}) [{ally}], dojscie {arrival}. Odrzucono: {rejected}.",
     selected_target: "Wybrano {target} ({player}), dojscie {arrival}. Rozkaz nie zostal wyslany automatycznie.",
     fetch_failed: "Nie moge pobrac {url}: HTTP {status}",
     not_enough_troops: "Brakuje wojska do ustawionych szablonow fejka.",
@@ -194,7 +243,16 @@ window.SafeFakes = {
 - `exclude_allies` - nazwy plemion do recznego wykluczenia.
 - `exclude_ally_tags` - tagi plemion do recznego wykluczenia.
 - `exclude_ally_ids` - ID plemion do recznego wykluczenia.
+- `exclude_coords` - koordynaty do recznego wykluczenia.
 - `min_points` - minimalne punkty celu.
+- `max_points` - maksymalne punkty celu; `0` wylacza.
+- `min_distance` - minimalny dystans od aktualnej wioski; `0` wylacza.
+- `max_distance` - maksymalny dystans od aktualnej wioski; `0` wylacza.
+- `target_limit_per_player` - maksymalna liczba wiosek jednego gracza w puli po filtrach; `0` wylacza.
+- `target_limit_per_ally` - maksymalna liczba wiosek jednego plemienia w puli po filtrach; `0` wylacza.
+- `target_weights` - wagi losowania po graczach, plemionach albo koordach.
+- `preview_mode` - pokazuje wybrany cel bez wpisywania formularza.
+- `debug_report` - wypisuje raport filtrowania do konsoli przegladarki.
 - `troops_templates` - lista szablonow wojska.
 - `fill_troops` - czym dopelniac fake pod limit swiata.
 - `fill_exact` - `false` dopelnia tylko tyle, ile trzeba; `true` bierze dostepny limit z `fill_troops`.
@@ -220,6 +278,30 @@ window.SafeFakes = {
 - `"village"` - losuje z wszystkich bezpiecznych wiosek
 - `"player"` - najpierw losuje gracza, potem jedna z jego wiosek
 - `"ally"` - najpierw losuje plemie, potem jedna z jego wiosek
+
+## Wagi Losowania
+
+`target_weights` zmienia szanse losowania. Waga moze byc ustawiona po nicku/ID gracza, tagu/ID/nazwie plemienia albo konkretnych koordach. Jesli cel pasuje do kilku wag, skrypt bierze najwyzsza.
+
+```js
+target_weights: {
+  players: {
+    EnemyNick: 3,
+    "123456": 5
+  },
+  allies: {
+    ENM: 2,
+    "999": 4
+  },
+  coords: {
+    "500|500": 3
+  }
+}
+```
+
+## Podglad I Debug
+
+`preview_mode:true` wybiera cel i pokazuje komunikat, ale nie wpisuje wojsk ani celu do formularza. `debug_report:true` wypisuje do konsoli obiekt z liczba celow po etapach: kandydaci, bezpieczne, zasieg szlachcica, dystans, limity, czas, blocking i finalny wybor.
 
 ## Boundaries
 
@@ -280,6 +362,10 @@ Skrypt odrzuca:
 - znajomych
 - graczy nieatakowalnych
 - wioski ponizej `min_points`
+- wioski powyzej `max_points`, jesli ustawione
+- wioski poza `min_distance` / `max_distance`, jesli ustawione
+- cele wykluczone przez `exclude_coords`
+- nadmiarowe cele po `target_limit_per_player` / `target_limit_per_ally`
 - cele poza zasiegiem szlachcica, gdy szablon zawiera `snob`
 - koordynaty, ktorych nie ma w aktualnych plikach mapy
 

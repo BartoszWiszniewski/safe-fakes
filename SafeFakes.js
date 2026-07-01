@@ -48,7 +48,16 @@
     exclude_allies: "",
     exclude_ally_tags: "",
     exclude_ally_ids: "",
+    exclude_coords: "",
     min_points: 0,
+    max_points: 0,
+    min_distance: 0,
+    max_distance: 0,
+    target_limit_per_player: 0,
+    target_limit_per_ally: 0,
+    target_weights: {},
+    preview_mode: false,
+    debug_report: false,
     troops_templates: [{ spy: 1, ram: 1 }, { spy: 1, catapult: 1 }, { ram: 1 }, { catapult: 1 }],
     fill_troops: "spear,sword,axe,archer,spy,light,marcher,heavy,ram,catapult",
     fill_exact: false,
@@ -77,7 +86,10 @@
     no_timed_targets: "Safe targets exist, but none match the arrival time or night bonus filters.",
     no_unblocked_targets: "Safe targets exist, but all are blocked by blocking settings.",
     no_snob_targets: "Safe targets exist, but all are outside noble range.",
+    no_distance_targets: "Safe targets exist, but none match distance filters.",
+    no_limited_targets: "Safe targets exist, but all are removed by per-player or per-ally limits.",
     troops_selected: "Troops selected. No target was configured.",
+    preview_target: "Preview {target} ({player}) [{ally}] arrival {arrival}. Rejected: {rejected}.",
     selected_target: "Selected {target} ({player}) arrival {arrival}. Command was not sent automatically.",
     fetch_failed: "Cannot fetch {url}: HTTP {status}",
     not_enough_troops: "Not enough troops for configured fake templates.",
@@ -124,11 +136,19 @@
     config.random_target = asBoolean(config.random_target, DEFAULT_CONFIG.random_target);
     config.require_relations = asBoolean(config.require_relations, DEFAULT_CONFIG.require_relations);
     config.load_map_frame = asBoolean(config.load_map_frame, DEFAULT_CONFIG.load_map_frame);
+    config.preview_mode = asBoolean(config.preview_mode, DEFAULT_CONFIG.preview_mode);
+    config.debug_report = asBoolean(config.debug_report, DEFAULT_CONFIG.debug_report);
     config.min_points = asNumber(config.min_points, DEFAULT_CONFIG.min_points);
+    config.max_points = asNumber(config.max_points, DEFAULT_CONFIG.max_points);
+    config.min_distance = asNumber(config.min_distance, DEFAULT_CONFIG.min_distance);
+    config.max_distance = asNumber(config.max_distance, DEFAULT_CONFIG.max_distance);
+    config.target_limit_per_player = asNumber(config.target_limit_per_player, DEFAULT_CONFIG.target_limit_per_player);
+    config.target_limit_per_ally = asNumber(config.target_limit_per_ally, DEFAULT_CONFIG.target_limit_per_ally);
     config.map_frame_timeout_ms = asNumber(config.map_frame_timeout_ms, DEFAULT_CONFIG.map_frame_timeout_ms);
     config.boundaries = Array.isArray(config.boundaries) ? config.boundaries : [];
     config.date_ranges = Array.isArray(config.date_ranges) ? config.date_ranges : [];
     config.troops_templates = Array.isArray(config.troops_templates) ? config.troops_templates : DEFAULT_CONFIG.troops_templates;
+    config.target_weights = config.target_weights && typeof config.target_weights === "object" ? config.target_weights : {};
     config.blocking_local = normalizeBlockingLocal(config.blocking_local);
     config.blocking_global = Array.isArray(config.blocking_global)
       ? config.blocking_global.map(normalizeBlockingGlobal).filter(Boolean)
@@ -297,6 +317,7 @@
     const allyNames = new Set(splitList(config.exclude_allies).map((item) => item.toLowerCase()));
     const allyTags = new Set(splitList(config.exclude_ally_tags).map((item) => item.toLowerCase()));
     const allyIds = new Set(splitList(config.exclude_ally_ids));
+    const coordKeys = new Set(parseCoords(config.exclude_coords).map(coordKey));
 
     for (const ally of world.alliesById.values()) {
       if (
@@ -316,7 +337,7 @@
       }
     }
 
-    return { playerIds, allyIds };
+    return { playerIds, allyIds, coordKeys };
   }
 
   function selectSafeTargets({
@@ -326,13 +347,14 @@
     currentPlayer,
     allowBarbarians = false,
     minPoints = 0,
-    exclusions = { playerIds: new Set(), allyIds: new Set() },
+    maxPoints = 0,
+    exclusions = { playerIds: new Set(), allyIds: new Set(), coordKeys: new Set() },
   }) {
     const accepted = [];
     const rejected = [];
 
     for (const coord of coords) {
-      const reason = getBlockReason(coord, world, relations, currentPlayer, allowBarbarians, minPoints, exclusions);
+      const reason = getBlockReason(coord, world, relations, currentPlayer, allowBarbarians, minPoints, maxPoints, exclusions);
       if (reason) {
         rejected.push(Object.assign({}, coord, { reason }));
         continue;
@@ -351,11 +373,13 @@
     return { accepted, rejected };
   }
 
-  function getBlockReason(coord, world, relations, currentPlayer, allowBarbarians, minPoints, exclusions) {
+  function getBlockReason(coord, world, relations, currentPlayer, allowBarbarians, minPoints, maxPoints, exclusions) {
+    if (exclusions.coordKeys && exclusions.coordKeys.has(coordKey(coord))) return "excluded_coord";
     const village = world.villagesByCoord.get(coordKey(coord));
     if (!village) return "missing_village";
     if (village.playerId === BARBARIAN_PLAYER_ID) return allowBarbarians ? null : "barbarian";
     if (Number(village.points || 0) < Number(minPoints || 0)) return "not_enough_points";
+    if (Number(maxPoints || 0) > 0 && Number(village.points || 0) > Number(maxPoints || 0)) return "too_many_points";
     if (village.playerId === String(currentPlayer.id)) return "own";
 
     const player = world.playersById.get(village.playerId);
@@ -736,6 +760,34 @@
     return targets.filter((target) => distance(gameData, target) < maxDist);
   }
 
+  function filterByDistanceConstraints(targets, gameData, config) {
+    const min = Number(config.min_distance || 0);
+    const max = Number(config.max_distance || 0);
+    if (min <= 0 && max <= 0) return targets;
+    return targets.filter((target) => {
+      const value = distance(gameData, target);
+      return (min <= 0 || value >= min) && (max <= 0 || value <= max);
+    });
+  }
+
+  function applyTargetLimits(targets, config) {
+    const playerLimit = Number(config.target_limit_per_player || 0);
+    const allyLimit = Number(config.target_limit_per_ally || 0);
+    if (playerLimit <= 0 && allyLimit <= 0) return targets;
+
+    const playerCounts = new Map();
+    const allyCounts = new Map();
+    return targets.filter((target) => {
+      const playerId = String(target.village && target.village.playerId || "");
+      const allyId = String(target.player && target.player.allyId || "");
+      if (playerLimit > 0 && (playerCounts.get(playerId) || 0) >= playerLimit) return false;
+      if (allyLimit > 0 && allyId && allyId !== NO_ALLY_ID && (allyCounts.get(allyId) || 0) >= allyLimit) return false;
+      playerCounts.set(playerId, (playerCounts.get(playerId) || 0) + 1);
+      if (allyId && allyId !== NO_ALLY_ID) allyCounts.set(allyId, (allyCounts.get(allyId) || 0) + 1);
+      return true;
+    });
+  }
+
   function filterByArrivalTime(targets, troops, unitInfo, gameData, worldConfig, config, now = new Date()) {
     const onlyScouts = Object.keys(troops).every((unit) => unit === "spy" || Number(troops[unit] || 0) === 0);
     return targets
@@ -875,32 +927,75 @@
     }
   }
 
-  function pickRandom(items, random) {
-    return items[Math.floor(random() * items.length)];
-  }
-
   function chooseTarget(items, config, random = Math.random) {
     if (!config.random_target) return items[0];
 
     if (config.random_target_by === "player") {
-      return chooseFromGroups(items, (item) => item.village && item.village.playerId, random);
+      return chooseFromGroups(items, config, (item) => item.village && item.village.playerId, random);
     }
 
     if (config.random_target_by === "ally") {
-      return chooseFromGroups(items, (item) => item.player && item.player.allyId, random);
+      return chooseFromGroups(items, config, (item) => item.player && item.player.allyId, random);
     }
 
-    return pickRandom(items, random);
+    return pickWeighted(items, (item) => getTargetWeight(item, config), random);
   }
 
-  function chooseFromGroups(items, keyFn, random) {
+  function chooseFromGroups(items, config, keyFn, random) {
     const groups = new Map();
     for (const item of items) {
       const key = String(keyFn(item) || "");
       if (!groups.has(key)) groups.set(key, []);
       groups.get(key).push(item);
     }
-    return pickRandom(pickRandom(Array.from(groups.values()), random), random);
+    const group = pickWeighted(Array.from(groups.values()), (items) => {
+      return Math.max(...items.map((item) => getTargetWeight(item, config)));
+    }, random);
+    return pickWeighted(group, (item) => getTargetWeight(item, config), random);
+  }
+
+  function pickWeighted(items, weightFn, random) {
+    const weights = items.map((item) => Math.max(1, Number(weightFn(item) || 1)));
+    const total = weights.reduce((sum, weight) => sum + weight, 0);
+    let cursor = random() * total;
+    for (let i = 0; i < items.length; i++) {
+      cursor -= weights[i];
+      if (cursor < 0) return items[i];
+    }
+    return items[items.length - 1];
+  }
+
+  function getTargetWeight(target, config) {
+    const weights = config.target_weights || {};
+    return Math.max(
+      1,
+      lookupWeight(weights.coords, [coordKey(target)]),
+      lookupWeight(weights.players, [
+        target.village && target.village.playerId,
+        target.player && target.player.id,
+        target.player && target.player.name,
+      ]),
+      lookupWeight(weights.allies, [
+        target.player && target.player.allyId,
+        target.ally && target.ally.id,
+        target.ally && target.ally.tag,
+        target.ally && target.ally.name,
+      ]),
+    );
+  }
+
+  function lookupWeight(table, keys) {
+    if (!table || typeof table !== "object") return 0;
+    for (const key of keys) {
+      if (key == null) continue;
+      const direct = table[String(key)];
+      if (direct != null) return Number(direct) || 0;
+      const lower = table[String(key).toLowerCase()];
+      if (lower != null) return Number(lower) || 0;
+      const loose = Object.keys(table).find((item) => item.toLowerCase() === String(key).toLowerCase());
+      if (loose != null) return Number(table[loose]) || 0;
+    }
+    return 0;
   }
 
   function formatArrival(date) {
@@ -910,6 +1005,45 @@
       hour: "2-digit",
       minute: "2-digit",
     });
+  }
+
+  function buildTargetMessage(config, key, target, rejected = []) {
+    return formatMessage(config, key, {
+      target: coordKey(target),
+      player: target.player ? target.player.name : "no player",
+      ally: target.ally ? target.ally.tag || target.ally.name || target.ally.id : "",
+      arrival: target.arrival ? formatArrival(target.arrival) : "",
+      rejected: summarizeRejected(rejected) || "none",
+    });
+  }
+
+  function buildDebugReport({
+    coords = [],
+    safeTargets = { accepted: [], rejected: [] },
+    troopConstrainedTargets = [],
+    distanceTargets = [],
+    limitedTargets = [],
+    timedTargets = [],
+    unblockedTargets = [],
+    selectedTarget = null,
+  }) {
+    return {
+      candidates: coords.length,
+      safe: safeTargets.accepted.length,
+      rejected: summarizeRejectedObject(safeTargets.rejected),
+      troop_constrained: troopConstrainedTargets.length,
+      distance: distanceTargets.length,
+      limited: limitedTargets.length,
+      timed: timedTargets.length,
+      unblocked: unblockedTargets.length,
+      selected: selectedTarget ? coordKey(selectedTarget) : null,
+    };
+  }
+
+  function emitDebugReport(config, report) {
+    if (!config.debug_report) return;
+    const consoleRef = root.console || console;
+    if (consoleRef && consoleRef.info) consoleRef.info("SafeFakes debug", report);
   }
 
   async function run() {
@@ -963,6 +1097,7 @@
         currentPlayer: gameData.player,
         allowBarbarians: config.include_barbarians,
         minPoints: config.min_points,
+        maxPoints: config.max_points,
         exclusions: buildExcludedIds({ config, world }),
       });
       if (safeTargets.accepted.length === 0) {
@@ -974,8 +1109,18 @@
         throw new Error(formatMessage(config, "no_snob_targets"));
       }
 
+      const distanceTargets = filterByDistanceConstraints(troopConstrainedTargets, gameData, config);
+      if (distanceTargets.length === 0) {
+        throw new Error(formatMessage(config, "no_distance_targets"));
+      }
+
+      const limitedTargets = applyTargetLimits(distanceTargets, config);
+      if (limitedTargets.length === 0) {
+        throw new Error(formatMessage(config, "no_limited_targets"));
+      }
+
       const timedTargets = filterByArrivalTime(
-        troopConstrainedTargets,
+        limitedTargets,
         troops,
         unitInfo,
         gameData,
@@ -993,14 +1138,27 @@
       }
 
       const target = chooseTarget(unblockedTargets, config);
+      const debugReport = buildDebugReport({
+        coords,
+        safeTargets,
+        troopConstrainedTargets,
+        distanceTargets,
+        limitedTargets,
+        timedTargets,
+        unblockedTargets,
+        selectedTarget: target,
+      });
+      emitDebugReport(config, debugReport);
+
+      if (config.preview_mode) {
+        showInfo(buildTargetMessage(config, "preview_target", target, safeTargets.rejected));
+        return;
+      }
+
       recordBlocking(target, config, gameData);
       fillTroopInputs(documentRef, troops);
       fillTargetInputs(documentRef, target);
-      showInfo(formatMessage(config, "selected_target", {
-        target: coordKey(target),
-        player: target.player ? target.player.name : "no player",
-        arrival: formatArrival(target.arrival),
-      }));
+      showInfo(buildTargetMessage(config, "selected_target", target, safeTargets.rejected));
     } catch (error) {
       error.nextVillageUrl = getNextVillageUrl(documentRef, config);
       throw error;
@@ -1008,9 +1166,14 @@
   }
 
   function summarizeRejected(rejected) {
-    const counts = {};
-    for (const item of rejected) counts[item.reason] = (counts[item.reason] || 0) + 1;
+    const counts = summarizeRejectedObject(rejected);
     return Object.keys(counts).map((key) => `${key}: ${counts[key]}`).join(", ");
+  }
+
+  function summarizeRejectedObject(rejected) {
+    const counts = {};
+    for (const item of rejected || []) counts[item.reason] = (counts[item.reason] || 0) + 1;
+    return counts;
   }
 
   function showInfo(message) {
@@ -1036,12 +1199,16 @@
     selectSafeTargets,
     normalizeConfig,
     parseForumConfiguration,
+    applyTargetLimits,
+    buildDebugReport,
+    buildTargetMessage,
     applyBlocking,
     recordBlocking,
     getNextVillageUrl,
     chooseTarget,
     formatMessage,
     getArrivalTime,
+    filterByDistanceConstraints,
     filterByTroopConstraints,
     filterByArrivalTime,
     getServerTime,

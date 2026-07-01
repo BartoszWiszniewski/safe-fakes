@@ -11,9 +11,13 @@ const {
   parseForumConfiguration,
   applyBlocking,
   recordBlocking,
+  applyTargetLimits,
+  buildDebugReport,
+  buildTargetMessage,
   getNextVillageUrl,
   chooseTarget,
   getServerTime,
+  filterByDistanceConstraints,
   filterByTroopConstraints,
   filterByArrivalTime,
   formatMessage,
@@ -238,6 +242,13 @@ test("normalizeConfig keeps Hermit option names and parses string booleans safel
     allow_barbarians: true,
     blocking_local: { time_s: "60", count: "2", block_players: "false" },
     fill_exact: "true",
+    max_points: "8000",
+    min_distance: "2",
+    max_distance: "20",
+    target_limit_per_player: "1",
+    target_limit_per_ally: "2",
+    preview_mode: "true",
+    debug_report: "true",
   });
 
   assert.equal(config.include_barbarians, true);
@@ -246,7 +257,32 @@ test("normalizeConfig keeps Hermit option names and parses string booleans safel
   assert.equal(config.blocking_local.time_s, 60);
   assert.equal(config.blocking_local.count, 2);
   assert.equal(config.blocking_local.block_players, false);
+  assert.equal(config.max_points, 8000);
+  assert.equal(config.min_distance, 2);
+  assert.equal(config.max_distance, 20);
+  assert.equal(config.target_limit_per_player, 1);
+  assert.equal(config.target_limit_per_ally, 2);
+  assert.equal(config.preview_mode, true);
+  assert.equal(config.debug_report, true);
   assert.deepEqual(config.troops_templates.slice(0, 2), [{ spy: 1, ram: 1 }, { spy: 1, catapult: 1 }]);
+});
+
+test("selectSafeTargets rejects excluded coords and villages above max_points", () => {
+  const exclusions = buildExcludedIds({
+    config: normalizeConfig({ exclude_coords: "480|491" }),
+    world,
+  });
+
+  const result = selectSafeTargets({
+    coords: parseCoords("480|491 482|491"),
+    world,
+    relations: { allyRelations: {}, friends: {}, non_attackable_players: [] },
+    currentPlayer: { id: "99", ally: "999" },
+    maxPoints: 5000,
+    exclusions,
+  });
+
+  assert.deepEqual(result.rejected.map((target) => target.reason), ["excluded_coord", "too_many_points"]);
 });
 
 test("buildCandidateCoords can include barbarian villages through the Hermit option name", () => {
@@ -262,6 +298,16 @@ test("buildCandidateCoords can include barbarian villages through the Hermit opt
   assert.deepEqual(result.map((target) => `${target.x}|${target.y}`), ["481|491"]);
 });
 
+test("filterByDistanceConstraints applies min and max distance from source village", () => {
+  const result = filterByDistanceConstraints(
+    [{ x: 1, y: 0 }, { x: 3, y: 4 }, { x: 10, y: 0 }],
+    { village: { x: 0, y: 0 } },
+    normalizeConfig({ min_distance: 2, max_distance: 6 }),
+  );
+
+  assert.deepEqual(result.map((target) => `${target.x}|${target.y}`), ["3|4"]);
+});
+
 test("filterByTroopConstraints rejects noble targets outside world snob range", () => {
   const result = filterByTroopConstraints(
     [{ x: 3, y: 4 }, { x: 6, y: 8 }],
@@ -271,6 +317,22 @@ test("filterByTroopConstraints rejects noble targets outside world snob range", 
   );
 
   assert.deepEqual(result.map((target) => `${target.x}|${target.y}`), ["3|4"]);
+});
+
+test("applyTargetLimits caps villages per player and per tribe", () => {
+  const targets = [
+    { x: 480, y: 491, village: { playerId: "10" }, player: { allyId: "200" } },
+    { x: 481, y: 491, village: { playerId: "10" }, player: { allyId: "200" } },
+    { x: 482, y: 491, village: { playerId: "20" }, player: { allyId: "200" } },
+    { x: 483, y: 491, village: { playerId: "30" }, player: { allyId: "300" } },
+  ];
+
+  const result = applyTargetLimits(targets, normalizeConfig({
+    target_limit_per_player: 1,
+    target_limit_per_ally: 2,
+  }));
+
+  assert.deepEqual(result.map((target) => `${target.x}|${target.y}`), ["480|491", "482|491", "483|491"]);
 });
 
 test("blocking filters blocked villages and records new entries", () => {
@@ -323,6 +385,36 @@ test("chooseTarget can randomize by player or ally first", () => {
   assert.equal(chooseTarget(targets, { random_target: true, random_target_by: "player" }, () => 0.80).village.playerId, "30");
   assert.equal(chooseTarget(targets, { random_target: true, random_target_by: "ally" }, () => 0.80).player.allyId, "300");
   assert.equal(chooseTarget(targets, { random_target: false, random_target_by: "player" }, () => 0.80).x, 480);
+});
+
+test("chooseTarget supports weighted player, tribe, and coord targets", () => {
+  const targets = [
+    {
+      x: 480,
+      y: 491,
+      village: { playerId: "10" },
+      player: { id: "10", name: "Enemy", allyId: "200" },
+      ally: { id: "200", tag: "ENM", name: "Enemies" },
+    },
+    {
+      x: 481,
+      y: 491,
+      village: { playerId: "20" },
+      player: { id: "20", name: "Heavy", allyId: "300" },
+      ally: { id: "300", tag: "HVY", name: "Heavy Tribe" },
+    },
+  ];
+
+  const target = chooseTarget(targets, normalizeConfig({
+    random_target: true,
+    target_weights: {
+      players: { Heavy: 9 },
+      allies: { ENM: 3 },
+      coords: { "480|491": 2 },
+    },
+  }), () => 0.3);
+
+  assert.equal(`${target.x}|${target.y}`, "481|491");
 });
 
 test("filterByArrivalTime calculates arrival from the provided base time", () => {
@@ -409,6 +501,50 @@ test("formatMessage supports configured message overrides and placeholders", () 
   assert.equal(
     formatMessage({ messages: {} }, "no_targets", {}),
     "No targets. Set coords, players/player_ids, or allies/ally_tags/ally_ids.",
+  );
+});
+
+test("buildTargetMessage and buildDebugReport expose preview details", () => {
+  const target = {
+    x: 480,
+    y: 491,
+    arrival: new Date(2026, 6, 2, 12, 30),
+    player: { name: "Enemy" },
+    ally: { tag: "ENM" },
+  };
+  const config = normalizeConfig({
+    messages: {
+      preview_target: "Podglad {target} {player} [{ally}] {arrival}. Odrzucono: {rejected}.",
+    },
+  });
+
+  assert.equal(
+    buildTargetMessage(config, "preview_target", target, [{ reason: "nap" }, { reason: "nap" }]),
+    "Podglad 480|491 Enemy [ENM] 02.07, 12:30. Odrzucono: nap: 2.",
+  );
+
+  assert.deepEqual(
+    buildDebugReport({
+      coords: [{}, {}, {}],
+      safeTargets: { accepted: [{}, {}], rejected: [{ reason: "nap" }] },
+      troopConstrainedTargets: [{}, {}],
+      distanceTargets: [{}],
+      limitedTargets: [{}],
+      timedTargets: [{}],
+      unblockedTargets: [{}],
+      selectedTarget: target,
+    }),
+    {
+      candidates: 3,
+      safe: 2,
+      rejected: { nap: 1 },
+      troop_constrained: 2,
+      distance: 1,
+      limited: 1,
+      timed: 1,
+      unblocked: 1,
+      selected: "480|491",
+    },
   );
 });
 
