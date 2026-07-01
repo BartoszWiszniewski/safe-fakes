@@ -346,13 +346,28 @@
   }
 
   function normalizeVillage(raw = {}) {
-    const player = normalizePlayer(raw.player || raw.owner || {});
-    const playerId = String(raw.playerId || raw.player_id || raw.owner_id || player.id || BARBARIAN_PLAYER_ID);
-    const ally = normalizeAlly(raw.ally || {});
+    const ownerRaw = raw.owner && typeof raw.owner === "object" ? raw.owner : {};
+    let player = normalizePlayer(raw.player || ownerRaw);
+    const ownerProvided = raw.owner != null && typeof raw.owner !== "object";
+    const ownerId = ownerProvided ? raw.owner : "";
+    const rawPlayerId = ownerProvided ? ownerId : raw.playerId || raw.player_id || raw.owner_id || player.id || BARBARIAN_PLAYER_ID;
+    const playerId = String(rawPlayerId);
+    const allyRaw = raw.ally && typeof raw.ally === "object" ? raw.ally : {};
+    const allyId = raw.ally && typeof raw.ally !== "object" ? raw.ally : raw.allyId || raw.ally_id || raw.tribe_id || raw.tribeId || "";
+    let ally = normalizeAlly(Object.assign({}, allyRaw, {
+      id: allyRaw.id || allyId,
+      name: allyRaw.name || raw.ally_name || raw.tribe_name,
+      tag: allyRaw.tag || raw.ally_tag || raw.tribe_tag,
+    }));
     const x = Number(raw.x);
     const y = Number(raw.y);
 
+    if (ownerProvided && player.id && player.id !== playerId) {
+      player = normalizePlayer({});
+      ally = normalizeAlly({});
+    }
     if (!player.id && playerId !== BARBARIAN_PLAYER_ID) player.id = playerId;
+    if (!player.name) player.name = raw.player_name || raw.owner_name || "";
     if (!player.allyId && ally.id) player.allyId = ally.id;
 
     return {
@@ -565,11 +580,12 @@
     let status = "Laduje dane mapy...";
     let highlightedElements = new Set();
     let minimapCanvas = null;
+    let mapRenderTimer = null;
+    let minimapRenderTimer = null;
     let searchQuery = "";
     let manualCoordsText = "";
     let originalOnClick = null;
-    let originalSpawnSector = null;
-    let spawnHost = null;
+    let spawnHooks = [];
 
     async function start() {
       if (!documentRef) return;
@@ -648,16 +664,20 @@
         };
       }
 
-      spawnHost = root.TWMap && (root.TWMap.mapHandler || (root.TWMap.map && root.TWMap.map.handler));
-      if (spawnHost && typeof spawnHost.spawnSector === "function" && !spawnHost.__safeFakesBuilderSpawnSector) {
-        originalSpawnSector = spawnHost.spawnSector;
-        spawnHost.__safeFakesBuilderSpawnSector = originalSpawnSector;
-        spawnHost.spawnSector = function safeFakesBuilderSpawnSector() {
-          const result = originalSpawnSector.apply(this, arguments);
-          root.setTimeout(applyMapHighlights, 0);
-          return result;
-        };
-      }
+      hookSpawnSector(root.TWMap && root.TWMap.mapHandler);
+      hookSpawnSector(root.TWMap && root.TWMap.map && root.TWMap.map.handler);
+    }
+
+    function hookSpawnSector(host) {
+      if (!host || typeof host.spawnSector !== "function" || host.__safeFakesBuilderSpawnSector) return;
+      const original = host.spawnSector;
+      host.__safeFakesBuilderSpawnSector = original;
+      spawnHooks.push(host);
+      host.spawnSector = function safeFakesBuilderSpawnSector() {
+        const result = original.apply(this, arguments);
+        scheduleHighlightsAfterMapChange();
+        return result;
+      };
     }
 
     function restoreMap() {
@@ -669,12 +689,14 @@
         handler.onClick = originalOnClick;
       }
 
-      if (spawnHost && spawnHost.__safeFakesBuilderSpawnSector) {
-        spawnHost.spawnSector = spawnHost.__safeFakesBuilderSpawnSector;
-        delete spawnHost.__safeFakesBuilderSpawnSector;
-      } else if (spawnHost && originalSpawnSector) {
-        spawnHost.spawnSector = originalSpawnSector;
+      for (const host of spawnHooks) {
+        if (host && host.__safeFakesBuilderSpawnSector) {
+          host.spawnSector = host.__safeFakesBuilderSpawnSector;
+          delete host.__safeFakesBuilderSpawnSector;
+        }
       }
+      spawnHooks = [];
+      clearRenderTimers();
     }
 
     function handleMapClick(x, y, event) {
@@ -1291,6 +1313,27 @@
       renderMinimapHighlights();
     }
 
+    function scheduleHighlightsAfterMapChange() {
+      if (!mapRenderTimer) {
+        mapRenderTimer = root.setTimeout(() => {
+          mapRenderTimer = null;
+          applyMapHighlights();
+        }, 0);
+      }
+      if (minimapRenderTimer) root.clearTimeout(minimapRenderTimer);
+      minimapRenderTimer = root.setTimeout(() => {
+        minimapRenderTimer = null;
+        renderMinimapHighlights();
+      }, 120);
+    }
+
+    function clearRenderTimers() {
+      if (mapRenderTimer) root.clearTimeout(mapRenderTimer);
+      if (minimapRenderTimer) root.clearTimeout(minimapRenderTimer);
+      mapRenderTimer = null;
+      minimapRenderTimer = null;
+    }
+
     function applyMapHighlights() {
       clearHighlights();
       const markers = collectVisibleMarkedVillages();
@@ -1333,7 +1376,11 @@
       const villages = root.TWMap && root.TWMap.villages;
       if (!villages) return result;
       for (const value of Object.values(villages)) {
-        const village = enrichVillage(value || {});
+        const mapVillage = normalizeVillage(value || {});
+        const worldVillage = Number.isFinite(mapVillage.x) && Number.isFinite(mapVillage.y)
+          ? world.villagesByCoord.get(coordKey(mapVillage))
+          : null;
+        const village = enrichVillage(Object.assign({}, worldVillage || {}, value || {}));
         if (Number.isFinite(village.x) && Number.isFinite(village.y)) result.set(coordKey(village), village);
       }
       return result;
@@ -1342,23 +1389,22 @@
     function renderMinimapHighlights() {
       clearMinimapHighlights();
       const mover = documentRef.querySelector("#minimap_mover");
-      const container = mover && mover.parentElement;
-      if (!container || !world.villagesByCoord.size) return;
+      if (!mover || !world.villagesByCoord.size) return;
 
-      const width = container.clientWidth || mover.clientWidth;
-      const height = container.clientHeight || mover.clientHeight;
+      const width = mover.clientWidth || (mover.parentElement && mover.parentElement.clientWidth);
+      const height = mover.clientHeight || (mover.parentElement && mover.parentElement.clientHeight);
       if (!width || !height) return;
 
-      if (root.getComputedStyle && root.getComputedStyle(container).position === "static") {
-        container.style.position = "relative";
+      if (root.getComputedStyle && root.getComputedStyle(mover).position === "static") {
+        mover.style.position = "relative";
       }
 
       minimapCanvas = documentRef.createElement("canvas");
       minimapCanvas.id = "safe-fakes-builder-minimap";
       minimapCanvas.width = width;
       minimapCanvas.height = height;
-      minimapCanvas.style.cssText = "position:absolute;left:0;top:0;width:100%;height:100%;z-index:13;pointer-events:none;";
-      container.appendChild(minimapCanvas);
+      minimapCanvas.style.cssText = "position:absolute;left:0;top:0;width:100%;height:100%;z-index:1;pointer-events:none;";
+      mover.appendChild(minimapCanvas);
 
       const context = minimapCanvas.getContext("2d");
       if (!context) return;
@@ -1398,13 +1444,18 @@
     function highlightVillage(village, type) {
       const element = getMapVillageElement(village);
       if (!element) return;
-      element.style.boxSizing = "border-box";
-      element.style.border = `5px solid ${COLORS[type]}`;
+      element.style.outline = `5px solid ${COLORS[type]}`;
+      element.style.outlineOffset = "-5px";
+      element.style.boxShadow = "0 0 0 1px rgba(0,0,0,.75)";
       highlightedElements.add(element);
     }
 
     function clearHighlights() {
-      for (const element of highlightedElements) element.style.border = "none";
+      for (const element of highlightedElements) {
+        element.style.outline = "";
+        element.style.outlineOffset = "";
+        element.style.boxShadow = "";
+      }
       highlightedElements = new Set();
     }
 

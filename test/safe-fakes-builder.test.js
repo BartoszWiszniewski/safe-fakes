@@ -135,6 +135,33 @@ test("getVillageMarkerType gives protection priority over target colors", () => 
   assert.equal(getVillageMarkerType(createBuilderState(), enemyVillage), null);
 });
 
+test("getVillageMarkerType reads live TWMap owner and tribe ids", () => {
+  const state = normalizeBuilderState({
+    player_ids: ["10"],
+    ally_ids: ["200"],
+    exclude_player_ids: ["11"],
+    exclude_ally_ids: ["201"],
+  });
+
+  assert.equal(getVillageMarkerType(state, { x: 500, y: 501, owner: "10" }), "group");
+  assert.equal(getVillageMarkerType(state, { x: 500, y: 502, owner: 11 }), "exclude");
+  assert.equal(getVillageMarkerType(state, { x: 500, y: 503, owner: 12, ally_id: 200 }), "group");
+  assert.equal(getVillageMarkerType(state, { x: 500, y: 504, owner: 13, ally: 201 }), "exclude");
+});
+
+test("live TWMap owner overrides stale world player data", () => {
+  const staleVillage = {
+    x: 500,
+    y: 501,
+    owner: "99",
+    player: { id: "10", name: "OldOwner", allyId: "200" },
+    ally: { id: "200", name: "Old Tribe", tag: "OLD" },
+  };
+
+  assert.equal(getVillageMarkerType(normalizeBuilderState({ player_ids: ["10"] }), staleVillage), null);
+  assert.equal(getVillageMarkerType(normalizeBuilderState({ player_ids: ["99"] }), staleVillage), "group");
+});
+
 test("removeStateItem removes list entries and matching weights", () => {
   const state = normalizeBuilderState({
     coords: ["500|501"],
