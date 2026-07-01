@@ -532,9 +532,7 @@
     let popup = null;
     let exportText = null;
     let status = "Laduje dane mapy...";
-    let markerLayer = null;
-    let highlightedMarkers = new Set();
-    let overviewLayers = new Set();
+    let highlightedElements = new Set();
     let originalOnClick = null;
     let originalSpawnSector = null;
     let spawnHost = null;
@@ -550,23 +548,17 @@
       await waitForTwMap();
       relations = snapshotRelations(root.TWMap);
       hookMap();
-      root.addEventListener("resize", applyHighlights);
-      root.addEventListener("scroll", applyHighlights, true);
       renderPanel();
       await loadWorld();
     }
 
     function stop() {
       restoreMap();
-      root.removeEventListener("resize", applyHighlights);
-      root.removeEventListener("scroll", applyHighlights, true);
       clearHighlights();
       if (popup) popup.remove();
       if (panel) panel.remove();
-      if (markerLayer) markerLayer.remove();
       popup = null;
       panel = null;
-      markerLayer = null;
       root.__safeFakesBuilderApp = null;
     }
 
@@ -835,7 +827,6 @@
       panel.appendChild(createCounts());
       panel.appendChild(createOptions());
       panel.appendChild(createLegend());
-      panel.appendChild(createMiniMapPreview());
       panel.appendChild(createSelectionLists());
       panel.appendChild(createExportControls());
     }
@@ -928,31 +919,6 @@
         legend.appendChild(item);
       }
       return legend;
-    }
-
-    function createMiniMapPreview() {
-      const wrap = documentRef.createElement("div");
-      wrap.className = "sfb-mini-preview";
-      const markers = collectMarkedVillages();
-      if (markers.size === 0) {
-        wrap.textContent = "Brak zaznaczen";
-        return wrap;
-      }
-
-      let shown = 0;
-      for (const [key, marker] of markers) {
-        if (shown >= 250) break;
-        const coord = villageFromCoordKey(key);
-        if (!coord) continue;
-        const dot = documentRef.createElement("span");
-        dot.className = `sfb-mini-dot sfb-mini-dot-${marker.type}`;
-        dot.style.setProperty("--sfb-color", COLORS[marker.type]);
-        positionOverviewMarker(dot, coord);
-        dot.title = `${key} ${marker.type}`;
-        wrap.appendChild(dot);
-        shown++;
-      }
-      return wrap;
     }
 
     function createSelectionLists() {
@@ -1152,7 +1118,6 @@
       clearHighlights();
       const markers = collectMarkedVillages();
       for (const [key, marker] of markers) highlightCoord(key, marker.type, marker.village);
-      highlightOverviewMaps(markers);
     }
 
     function collectMarkedVillages() {
@@ -1196,90 +1161,14 @@
     function highlightVillage(village, type) {
       const element = getMapVillageElement(village);
       if (!element) return;
-      element.style.boxShadow = "";
-      const rect = element.getBoundingClientRect();
-      if (rect.width <= 0 || rect.height <= 0) return;
-      const marker = documentRef.createElement("div");
-      marker.className = `sfb-map-marker sfb-map-marker-${type}`;
-      marker.style.setProperty("--sfb-color", COLORS[type]);
-      marker.style.left = `${rect.left + rect.width / 2}px`;
-      marker.style.top = `${rect.top + rect.height / 2}px`;
-      marker.title = `${coordKey(village)} ${type}`;
-      ensureMarkerLayer().appendChild(marker);
-      highlightedMarkers.add(marker);
+      element.style.boxSizing = "border-box";
+      element.style.border = `5px solid ${COLORS[type]}`;
+      highlightedElements.add(element);
     }
 
     function clearHighlights() {
-      for (const marker of highlightedMarkers) marker.remove();
-      for (const layer of overviewLayers) layer.remove();
-      highlightedMarkers = new Set();
-      overviewLayers = new Set();
-    }
-
-    function ensureMarkerLayer() {
-      if (markerLayer && markerLayer.isConnected) return markerLayer;
-      markerLayer = documentRef.createElement("div");
-      markerLayer.id = "safe-fakes-builder-map-markers";
-      documentRef.body.appendChild(markerLayer);
-      return markerLayer;
-    }
-
-    function highlightOverviewMaps(markers) {
-      for (const container of getOverviewContainers()) {
-        const layer = documentRef.createElement("div");
-        layer.className = "sfb-overview-marker-layer";
-        if (root.getComputedStyle && root.getComputedStyle(container).position === "static") {
-          container.style.position = "relative";
-        }
-        container.appendChild(layer);
-        overviewLayers.add(layer);
-        for (const [key, marker] of markers) {
-          const coord = villageFromCoordKey(key);
-          if (!coord) continue;
-          const dot = documentRef.createElement("span");
-          dot.className = `sfb-overview-dot sfb-overview-dot-${marker.type}`;
-          dot.style.setProperty("--sfb-color", COLORS[marker.type]);
-          positionOverviewMarker(dot, coord);
-          layer.appendChild(dot);
-        }
-      }
-    }
-
-    function getOverviewContainers() {
-      const selectors = [
-        "#map_overview",
-        "#minimap",
-        "#map_mini",
-        "#map_mini_map",
-        ".map_overview",
-        ".minimap",
-        "[id*='map_overview']",
-        "[id*='minimap']",
-        "[id*='mini_map']",
-        "[id*='overview_map']",
-      ];
-      const containers = [];
-      for (const selector of selectors) {
-        for (const element of Array.from(documentRef.querySelectorAll(selector))) {
-          const container = ["IMG", "CANVAS"].includes(element.tagName) ? element.parentElement : element;
-          if (!container || containers.includes(container)) continue;
-          if (panel && panel.contains(container)) continue;
-          if (container.offsetWidth < 50 || container.offsetHeight < 50) continue;
-          containers.push(container);
-        }
-      }
-      return containers;
-    }
-
-    function positionOverviewMarker(dot, coord) {
-      const current = root.game_data && root.game_data.village;
-      const sameContinent = current &&
-        Math.floor(Number(current.x) / 100) === Math.floor(Number(coord.x) / 100) &&
-        Math.floor(Number(current.y) / 100) === Math.floor(Number(coord.y) / 100);
-      const left = sameContinent ? Number(coord.x) % 100 : Number(coord.x) / 10;
-      const top = sameContinent ? Number(coord.y) % 100 : Number(coord.y) / 10;
-      dot.style.left = `${Math.max(0, Math.min(100, left))}%`;
-      dot.style.top = `${Math.max(0, Math.min(100, top))}%`;
+      for (const element of highlightedElements) element.style.border = "none";
+      highlightedElements = new Set();
     }
 
     function getMapVillageElement(village) {
@@ -1301,10 +1190,6 @@
 #safe-fakes-builder button,#safe-fakes-builder-popup button{font:12px Arial,sans-serif;line-height:1.2;padding:5px 7px;border:1px solid #4b5563;border-radius:4px;background:#1f2937;color:#f9fafb;cursor:pointer}
 #safe-fakes-builder button:hover,#safe-fakes-builder-popup button:hover{background:#374151}
 #safe-fakes-builder button:disabled,#safe-fakes-builder-popup button:disabled{opacity:.38;cursor:not-allowed}
-#safe-fakes-builder-map-markers{position:fixed;inset:0;z-index:14980;pointer-events:none}
-.sfb-map-marker{position:fixed;width:28px;height:28px;transform:translate(-50%,-50%);border:3px solid var(--sfb-color);border-radius:50%;box-shadow:0 0 0 2px rgba(17,24,39,.95),0 0 14px var(--sfb-color);pointer-events:none}
-.sfb-map-marker:after{content:"";position:absolute;left:50%;top:50%;width:7px;height:7px;transform:translate(-50%,-50%);border-radius:50%;background:var(--sfb-color);box-shadow:0 0 0 1px rgba(17,24,39,.95)}
-.sfb-map-marker-exclude:before{content:"";position:absolute;left:5px;right:5px;top:11px;height:3px;background:var(--sfb-color);transform:rotate(45deg);box-shadow:0 0 0 1px rgba(17,24,39,.7)}
 .sfb-title{font-weight:700;margin-bottom:6px;font-size:13px}
 .sfb-status{margin-bottom:8px;color:#d1d5db}
 .sfb-counts{display:grid;grid-template-columns:1fr 1fr;gap:4px;margin-bottom:8px}
@@ -1316,10 +1201,6 @@
 .sfb-legend{display:flex;gap:8px;margin-bottom:8px;flex-wrap:wrap;color:#d1d5db}
 .sfb-legend span{display:inline-flex;align-items:center;gap:4px}
 .sfb-legend i{width:10px;height:10px;display:inline-block;border:1px solid rgba(255,255,255,.45)}
-.sfb-mini-preview{height:96px;position:relative;overflow:hidden;margin-bottom:8px;border:1px solid #243044;border-radius:5px;background:linear-gradient(#122018,#0f172a);color:#9ca3af;display:flex;align-items:center;justify-content:center}
-.sfb-mini-dot,.sfb-overview-dot{position:absolute;width:8px;height:8px;transform:translate(-50%,-50%);border-radius:50%;background:var(--sfb-color);box-shadow:0 0 0 2px rgba(17,24,39,.95),0 0 8px var(--sfb-color);pointer-events:none}
-.sfb-mini-dot-exclude,.sfb-overview-dot-exclude{border-radius:2px}
-.sfb-overview-marker-layer{position:absolute;inset:0;z-index:10;pointer-events:none}
 .sfb-lists{display:grid;gap:6px;margin-bottom:8px}
 .sfb-details{border:1px solid #243044;border-radius:5px;background:#0b1220}
 .sfb-details summary{cursor:pointer;padding:6px 7px;font-weight:700}

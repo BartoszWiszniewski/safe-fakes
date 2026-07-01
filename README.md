@@ -98,7 +98,7 @@ Jak dziala:
 - popup pokaze wlasciciela, plemie, punkty i relacje
 - wybierz `Cel: koord`, `Cel: gracz`, `Cel: plemie` albo `Chron koord/gracza/plemie`
 - chronione relacje (`twoja wioska`, `twoje plemie`, `sojusznik`, `pakt NAP`, `znajomy`, `nieatakowalny`) nie maja aktywnych przyciskow dodania do celow
-- panel po prawej pokazuje liczby, minimalne/maksymalne punkty, sposob losowania, mini-podglad mapy, listy i eksport
+- panel po prawej pokazuje liczby, minimalne/maksymalne punkty, sposob losowania, listy i eksport
 - sekcje `Cele` oraz `Nie ruszac` mozna otwierac i chowac; z list mozna usuwac koordy, graczy i plemiona
 - `Bookmarklet` generuje gotowy kod do paska zakladek
 - `Config` generuje samo `window.SafeFakes = {...};`
@@ -109,7 +109,7 @@ Kolory na mapie:
 - niebieski - wioski pasujace do dodanego gracza albo plemienia
 - czerwony - reczne wykluczenia i chronione koordy/gracze/plemiona
 
-Builder rysuje wlasna warstwe okraglych markerow nad glowna mapa. Probuje tez dorysowac kropki na mapie podgladu/minimapie, jesli aktualny szablon gry ma rozpoznawalny kontener typu `map_overview` albo `minimap`.
+Builder oznacza wioski na glownej mapie przez `#map_village_ID` i kolorowy border, tak jak typowe skrypty mapowe oparte o `TWMap`. Nie rysuje osobnej warstwy nad mapa.
 
 Builder zapisuje stan w `localStorage` pod `SafeFakesBuilder.state`, wiec mozna zamknac okno i wrocic do pracy pozniej. Sam builder niczego nie wysyla i nie wypelnia placu; robi tylko konfiguracje.
 
