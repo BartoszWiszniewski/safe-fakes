@@ -6,6 +6,9 @@ const {
   normalizeBuilderState,
   applyVillageAction,
   classifyVillage,
+  getVillageSelectionState,
+  getVillageMarkerType,
+  removeStateItem,
   buildSafeFakesConfig,
   buildBookmarklet,
 } = require("../SafeFakesBuilder");
@@ -84,6 +87,69 @@ test("exclude actions remove matching target selectors before export", () => {
       coords: {},
     },
   });
+});
+
+test("getVillageSelectionState reports target and protected toggles for popup buttons", () => {
+  const state = normalizeBuilderState({
+    coords: ["500|501"],
+    player_ids: ["10"],
+    ally_ids: ["200"],
+    exclude_coords: ["500|502"],
+    exclude_player_ids: ["11"],
+    exclude_ally_ids: ["201"],
+  });
+
+  assert.deepEqual(getVillageSelectionState(state, enemyVillage), {
+    coordTargeted: true,
+    playerTargeted: true,
+    allyTargeted: true,
+    coordProtected: false,
+    playerProtected: false,
+    allyProtected: false,
+  });
+  assert.deepEqual(getVillageSelectionState(state, {
+    x: 500,
+    y: 502,
+    playerId: "11",
+    player: { id: "11", name: "Protected", allyId: "201" },
+    ally: { id: "201", name: "Protected Tribe", tag: "PRT" },
+  }), {
+    coordTargeted: false,
+    playerTargeted: false,
+    allyTargeted: false,
+    coordProtected: true,
+    playerProtected: true,
+    allyProtected: true,
+  });
+});
+
+test("getVillageMarkerType gives protection priority over target colors", () => {
+  assert.equal(getVillageMarkerType(normalizeBuilderState({ coords: ["500|501"] }), enemyVillage), "coord");
+  assert.equal(getVillageMarkerType(normalizeBuilderState({ ally_ids: ["200"] }), enemyVillage), "group");
+  assert.equal(getVillageMarkerType(normalizeBuilderState({
+    ally_ids: ["200"],
+    exclude_player_ids: ["10"],
+  }), enemyVillage), "exclude");
+  assert.equal(getVillageMarkerType(createBuilderState(), enemyVillage), null);
+});
+
+test("removeStateItem removes list entries and matching weights", () => {
+  const state = normalizeBuilderState({
+    coords: ["500|501"],
+    player_ids: ["10"],
+    target_weights: {
+      coords: { "500|501": 3 },
+      players: { 10: 2 },
+    },
+  });
+
+  const withoutCoord = removeStateItem(state, "coords", "500|501");
+  const withoutPlayer = removeStateItem(withoutCoord, "player_ids", "10");
+
+  assert.deepEqual(withoutPlayer.coords, []);
+  assert.deepEqual(withoutPlayer.player_ids, []);
+  assert.deepEqual(withoutPlayer.target_weights.coords, {});
+  assert.deepEqual(withoutPlayer.target_weights.players, {});
 });
 
 test("classifyVillage marks protected relations before generic targets", () => {

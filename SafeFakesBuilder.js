@@ -42,9 +42,9 @@
     "exclude_ally_ids",
   ];
   const COLORS = {
-    coord: "#20b455",
-    group: "#2f7df6",
-    exclude: "#d33f49",
+    coord: "#22c55e",
+    group: "#3b82f6",
+    exclude: "#ef4444",
   };
   const RELATION_LABELS = {
     own: "twoja wioska",
@@ -178,6 +178,11 @@
     return uniqueList(values).filter((item) => item !== key);
   }
 
+  function listHas(values, value) {
+    const key = String(value || "");
+    return uniqueList(values).includes(key);
+  }
+
   function applyVillageAction(rawState, rawVillage, action) {
     const state = normalizeBuilderState(rawState);
     const village = normalizeVillage(rawVillage);
@@ -211,6 +216,46 @@
       removeAllyTarget(state, village, false);
     } else if (action === "remove_exclude_ally") {
       removeAllyTarget(state, village, true);
+    }
+
+    return normalizeBuilderState(state);
+  }
+
+  function getVillageSelectionState(rawState, rawVillage) {
+    const state = normalizeBuilderState(rawState);
+    const village = normalizeVillage(rawVillage);
+    const player = village.player || {};
+    const ally = village.ally || {};
+
+    return {
+      coordTargeted: listHas(state.coords, coordKey(village)),
+      playerTargeted: listHas(state.player_ids, player.id) || listHas(state.players, player.name),
+      allyTargeted: listHas(state.ally_ids, ally.id) || listHas(state.ally_tags, ally.tag) || listHas(state.allies, ally.name),
+      coordProtected: listHas(state.exclude_coords, coordKey(village)),
+      playerProtected: listHas(state.exclude_player_ids, player.id) || listHas(state.exclude_players, player.name),
+      allyProtected: listHas(state.exclude_ally_ids, ally.id) || listHas(state.exclude_ally_tags, ally.tag) || listHas(state.exclude_allies, ally.name),
+    };
+  }
+
+  function getVillageMarkerType(rawState, rawVillage) {
+    const selected = getVillageSelectionState(rawState, rawVillage);
+    if (selected.coordProtected || selected.playerProtected || selected.allyProtected) return "exclude";
+    if (selected.coordTargeted) return "coord";
+    if (selected.playerTargeted || selected.allyTargeted) return "group";
+    return null;
+  }
+
+  function removeStateItem(rawState, key, value) {
+    const state = normalizeBuilderState(rawState);
+    if (!LIST_KEYS.includes(key)) return state;
+
+    state[key] = removeValue(state[key], value);
+    if (key === "coords" || key === "exclude_coords") delete state.target_weights.coords[String(value)];
+    if (key === "players" || key === "player_ids" || key === "exclude_players" || key === "exclude_player_ids") {
+      delete state.target_weights.players[String(value)];
+    }
+    if (key === "allies" || key === "ally_tags" || key === "ally_ids" || key === "exclude_allies" || key === "exclude_ally_tags" || key === "exclude_ally_ids") {
+      delete state.target_weights.allies[String(value)];
     }
 
     return normalizeBuilderState(state);
@@ -487,7 +532,9 @@
     let popup = null;
     let exportText = null;
     let status = "Laduje dane mapy...";
-    let highlightedElements = new Set();
+    let markerLayer = null;
+    let highlightedMarkers = new Set();
+    let overviewLayers = new Set();
     let originalOnClick = null;
     let originalSpawnSector = null;
     let spawnHost = null;
@@ -503,17 +550,23 @@
       await waitForTwMap();
       relations = snapshotRelations(root.TWMap);
       hookMap();
+      root.addEventListener("resize", applyHighlights);
+      root.addEventListener("scroll", applyHighlights, true);
       renderPanel();
       await loadWorld();
     }
 
     function stop() {
       restoreMap();
+      root.removeEventListener("resize", applyHighlights);
+      root.removeEventListener("scroll", applyHighlights, true);
       clearHighlights();
       if (popup) popup.remove();
       if (panel) panel.remove();
+      if (markerLayer) markerLayer.remove();
       popup = null;
       panel = null;
+      markerLayer = null;
       root.__safeFakesBuilderApp = null;
     }
 
@@ -638,17 +691,22 @@
       const canTarget = canTargetVillage(relation);
       const hasPlayer = village.player && village.player.id && village.player.id !== BARBARIAN_PLAYER_ID;
       const hasAlly = village.ally && village.ally.id && village.ally.id !== NO_ALLY_ID;
+      const selected = getVillageSelectionState(state, village);
 
       popup = documentRef.createElement("div");
       popup.id = "safe-fakes-builder-popup";
       popup.appendChild(createPopupHeader(village, relation));
+      popup.appendChild(createPopupSection("Cele", [
+        makeActionButton(selected.coordTargeted ? "Usun koord" : "Koord", selected.coordTargeted ? "remove_coord" : "add_coord", village, !selected.coordTargeted && !canTarget, "target"),
+        makeActionButton(selected.playerTargeted ? "Usun gracza" : "Gracz", selected.playerTargeted ? "remove_player" : "add_player", village, !hasPlayer || (!selected.playerTargeted && !canTarget), "target"),
+        makeActionButton(selected.allyTargeted ? "Usun plemie" : "Plemie", selected.allyTargeted ? "remove_ally" : "add_ally", village, !hasAlly || (!selected.allyTargeted && !canTarget), "target"),
+      ]));
+      popup.appendChild(createPopupSection("Nie ruszac", [
+        makeActionButton(selected.coordProtected ? "Usun ochrone koordu" : "Chron koord", selected.coordProtected ? "remove_exclude_coord" : "exclude_coord", village, false, "protect"),
+        makeActionButton(selected.playerProtected ? "Usun ochrone gracza" : "Chron gracza", selected.playerProtected ? "remove_exclude_player" : "exclude_player", village, !hasPlayer, "protect"),
+        makeActionButton(selected.allyProtected ? "Usun ochrone plemienia" : "Chron plemie", selected.allyProtected ? "remove_exclude_ally" : "exclude_ally", village, !hasAlly, "protect"),
+      ]));
       popup.appendChild(createButtonGrid([
-        makeActionButton(state.coords.includes(coordKey(village)) ? "Usun koord" : "Cel: koord", state.coords.includes(coordKey(village)) ? "remove_coord" : "add_coord", village, !canTarget),
-        makeActionButton(state.exclude_coords.includes(coordKey(village)) ? "Usun blokade" : "Chron koord", state.exclude_coords.includes(coordKey(village)) ? "remove_exclude_coord" : "exclude_coord", village, false),
-        makeActionButton("Cel: gracz", "add_player", village, !canTarget || !hasPlayer),
-        makeActionButton("Chron gracza", "exclude_player", village, !hasPlayer),
-        makeActionButton("Cel: plemie", "add_ally", village, !canTarget || !hasAlly),
-        makeActionButton("Chron plemie", "exclude_ally", village, !hasAlly),
         makeWeightButton("Waga koord", "coords", coordKey(village), state.target_weights.coords[coordKey(village)]),
         makeCloseButton(),
       ]));
@@ -680,6 +738,17 @@
       return header;
     }
 
+    function createPopupSection(titleText, buttons) {
+      const section = documentRef.createElement("div");
+      section.className = "sfb-popup-section";
+      const title = documentRef.createElement("div");
+      title.className = "sfb-popup-section-title";
+      title.textContent = titleText;
+      section.appendChild(title);
+      section.appendChild(createButtonGrid(buttons));
+      return section;
+    }
+
     function createButtonGrid(buttons) {
       const grid = documentRef.createElement("div");
       grid.className = "sfb-button-grid";
@@ -687,10 +756,11 @@
       return grid;
     }
 
-    function makeActionButton(label, action, village, disabled) {
+    function makeActionButton(label, action, village, disabled, kind) {
       const button = documentRef.createElement("button");
       button.type = "button";
       button.textContent = label;
+      button.className = kind ? `sfb-button-${kind}` : "";
       button.disabled = Boolean(disabled);
       button.addEventListener("click", () => {
         updateState(applyVillageAction(state, village, action));
@@ -765,6 +835,8 @@
       panel.appendChild(createCounts());
       panel.appendChild(createOptions());
       panel.appendChild(createLegend());
+      panel.appendChild(createMiniMapPreview());
+      panel.appendChild(createSelectionLists());
       panel.appendChild(createExportControls());
     }
 
@@ -858,6 +930,165 @@
       return legend;
     }
 
+    function createMiniMapPreview() {
+      const wrap = documentRef.createElement("div");
+      wrap.className = "sfb-mini-preview";
+      const markers = collectMarkedVillages();
+      if (markers.size === 0) {
+        wrap.textContent = "Brak zaznaczen";
+        return wrap;
+      }
+
+      let shown = 0;
+      for (const [key, marker] of markers) {
+        if (shown >= 250) break;
+        const coord = villageFromCoordKey(key);
+        if (!coord) continue;
+        const dot = documentRef.createElement("span");
+        dot.className = `sfb-mini-dot sfb-mini-dot-${marker.type}`;
+        dot.style.setProperty("--sfb-color", COLORS[marker.type]);
+        positionOverviewMarker(dot, coord);
+        dot.title = `${key} ${marker.type}`;
+        wrap.appendChild(dot);
+        shown++;
+      }
+      return wrap;
+    }
+
+    function createSelectionLists() {
+      const wrap = documentRef.createElement("div");
+      wrap.className = "sfb-lists";
+      wrap.appendChild(createDetails("Cele", [
+        createCoordList("Wioski", "coords"),
+        createPairList("Gracze", pairPlayers(false), removePlayerPair),
+        createPairList("Plemiona", pairAllies(false), removeAllyPair),
+      ], true));
+      wrap.appendChild(createDetails("Nie ruszac", [
+        createCoordList("Wioski", "exclude_coords"),
+        createPairList("Gracze", pairPlayers(true), removePlayerPair),
+        createPairList("Plemiona", pairAllies(true), removeAllyPair),
+      ], false));
+      return wrap;
+    }
+
+    function createDetails(label, nodes, open) {
+      const details = documentRef.createElement("details");
+      details.className = "sfb-details";
+      details.open = open;
+      const summary = documentRef.createElement("summary");
+      summary.textContent = label;
+      details.appendChild(summary);
+      for (const node of nodes) details.appendChild(node);
+      return details;
+    }
+
+    function createCoordList(label, key) {
+      return createListGroup(label, state[key].map((value) => ({
+        label: value,
+        onRemove: () => updateState(removeStateItem(state, key, value)),
+      })));
+    }
+
+    function createPairList(label, items, onRemove) {
+      return createListGroup(label, items.map((item) => ({
+        label: item.label,
+        onRemove: () => updateState(onRemove(state, item)),
+      })));
+    }
+
+    function createListGroup(label, rows) {
+      const group = documentRef.createElement("div");
+      group.className = "sfb-list-group";
+      const title = documentRef.createElement("div");
+      title.className = "sfb-list-title";
+      title.textContent = `${label}: ${rows.length}`;
+      group.appendChild(title);
+
+      if (rows.length === 0) {
+        const empty = documentRef.createElement("div");
+        empty.className = "sfb-list-empty";
+        empty.textContent = "puste";
+        group.appendChild(empty);
+        return group;
+      }
+
+      for (const row of rows.slice(0, 80)) {
+        const item = documentRef.createElement("div");
+        item.className = "sfb-list-item";
+        const text = documentRef.createElement("span");
+        text.textContent = row.label;
+        const remove = documentRef.createElement("button");
+        remove.type = "button";
+        remove.textContent = "x";
+        remove.title = "Usun";
+        remove.addEventListener("click", row.onRemove);
+        item.appendChild(text);
+        item.appendChild(remove);
+        group.appendChild(item);
+      }
+      if (rows.length > 80) {
+        const more = documentRef.createElement("div");
+        more.className = "sfb-list-empty";
+        more.textContent = `+${rows.length - 80} wiecej`;
+        group.appendChild(more);
+      }
+      return group;
+    }
+
+    function pairPlayers(excluded) {
+      const ids = excluded ? state.exclude_player_ids : state.player_ids;
+      const names = excluded ? state.exclude_players : state.players;
+      const length = Math.max(ids.length, names.length);
+      const items = [];
+      for (let i = 0; i < length; i++) {
+        const id = ids[i] || "";
+        const name = names[i] || "";
+        items.push({
+          id,
+          name,
+          excluded,
+          label: name && id ? `${name} (#${id})` : name || `#${id}`,
+        });
+      }
+      return items;
+    }
+
+    function pairAllies(excluded) {
+      const ids = excluded ? state.exclude_ally_ids : state.ally_ids;
+      const tags = excluded ? state.exclude_ally_tags : state.ally_tags;
+      const names = excluded ? state.exclude_allies : state.allies;
+      const length = Math.max(ids.length, tags.length, names.length);
+      const items = [];
+      for (let i = 0; i < length; i++) {
+        const id = ids[i] || "";
+        const tag = tags[i] || "";
+        const name = names[i] || "";
+        const label = [tag || name || `#${id}`, id ? `#${id}` : ""].filter(Boolean).join(" ");
+        items.push({ id, tag, name, excluded, label });
+      }
+      return items;
+    }
+
+    function removePlayerPair(rawState, item) {
+      let next = rawState;
+      const idKey = item.excluded ? "exclude_player_ids" : "player_ids";
+      const nameKey = item.excluded ? "exclude_players" : "players";
+      if (item.id) next = removeStateItem(next, idKey, item.id);
+      if (item.name) next = removeStateItem(next, nameKey, item.name);
+      return next;
+    }
+
+    function removeAllyPair(rawState, item) {
+      let next = rawState;
+      const idKey = item.excluded ? "exclude_ally_ids" : "ally_ids";
+      const tagKey = item.excluded ? "exclude_ally_tags" : "ally_tags";
+      const nameKey = item.excluded ? "exclude_allies" : "allies";
+      if (item.id) next = removeStateItem(next, idKey, item.id);
+      if (item.tag) next = removeStateItem(next, tagKey, item.tag);
+      if (item.name) next = removeStateItem(next, nameKey, item.name);
+      return next;
+    }
+
     function createExportControls() {
       const wrap = documentRef.createElement("div");
       wrap.className = "sfb-export";
@@ -919,57 +1150,42 @@
 
     function applyHighlights() {
       clearHighlights();
-      highlightPlayerAndAllyMatches(COLORS.group);
-      for (const key of state.coords) highlightCoord(key, COLORS.coord);
-      highlightExcludedMatches(COLORS.exclude);
-      for (const key of state.exclude_coords) highlightCoord(key, COLORS.exclude);
+      const markers = collectMarkedVillages();
+      for (const [key, marker] of markers) highlightCoord(key, marker.type, marker.village);
+      highlightOverviewMaps(markers);
     }
 
-    function highlightPlayerAndAllyMatches(color) {
-      const playerIds = new Set(state.player_ids);
-      const playerNames = new Set(state.players.map((name) => name.toLowerCase()));
-      const allyIds = new Set(state.ally_ids);
-      const allyTags = new Set(state.ally_tags.map((tag) => tag.toLowerCase()));
-      const allyNames = new Set(state.allies.map((name) => name.toLowerCase()));
-      if (!playerIds.size && !playerNames.size && !allyIds.size && !allyTags.size && !allyNames.size) return;
-
-      for (const village of world.villagesByCoord.values()) {
-        if (matchesVillageSelector(village, playerIds, playerNames, allyIds, allyTags, allyNames)) {
-          highlightVillage(village, color);
+    function collectMarkedVillages() {
+      const markers = new Map();
+      for (const village of getKnownVillages().values()) {
+        const type = getVillageMarkerType(state, village);
+        if (type) markers.set(coordKey(village), { type, village });
+      }
+      for (const key of state.coords) {
+        if (!markers.has(key) || markers.get(key).type !== "exclude") {
+          markers.set(key, { type: "coord", village: world.villagesByCoord.get(key) || villageFromCoordKey(key) });
         }
       }
-    }
-
-    function highlightExcludedMatches(color) {
-      const playerIds = new Set(state.exclude_player_ids);
-      const playerNames = new Set(state.exclude_players.map((name) => name.toLowerCase()));
-      const allyIds = new Set(state.exclude_ally_ids);
-      const allyTags = new Set(state.exclude_ally_tags.map((tag) => tag.toLowerCase()));
-      const allyNames = new Set(state.exclude_allies.map((name) => name.toLowerCase()));
-      if (!playerIds.size && !playerNames.size && !allyIds.size && !allyTags.size && !allyNames.size) return;
-
-      for (const village of world.villagesByCoord.values()) {
-        if (matchesVillageSelector(village, playerIds, playerNames, allyIds, allyTags, allyNames)) {
-          highlightVillage(village, color);
-        }
+      for (const key of state.exclude_coords) {
+        markers.set(key, { type: "exclude", village: world.villagesByCoord.get(key) || villageFromCoordKey(key) });
       }
+      return markers;
     }
 
-    function matchesVillageSelector(village, playerIds, playerNames, allyIds, allyTags, allyNames) {
-      const player = village.player || world.playersById.get(String(village.playerId)) || {};
-      const ally = village.ally || world.alliesById.get(String(player.allyId)) || {};
-      return playerIds.has(String(village.playerId)) ||
-        playerIds.has(String(player.id)) ||
-        playerNames.has(String(player.name || "").toLowerCase()) ||
-        allyIds.has(String(player.allyId)) ||
-        allyIds.has(String(ally.id)) ||
-        allyTags.has(String(ally.tag || "").toLowerCase()) ||
-        allyNames.has(String(ally.name || "").toLowerCase());
+    function getKnownVillages() {
+      const result = new Map(world.villagesByCoord);
+      const villages = root.TWMap && root.TWMap.villages;
+      if (!villages) return result;
+      for (const value of Object.values(villages)) {
+        const village = enrichVillage(value || {});
+        if (Number.isFinite(village.x) && Number.isFinite(village.y)) result.set(coordKey(village), village);
+      }
+      return result;
     }
 
-    function highlightCoord(key, color) {
-      const village = world.villagesByCoord.get(key) || villageFromCoordKey(key);
-      if (village) highlightVillage(village, color);
+    function highlightCoord(key, type, fallbackVillage) {
+      const village = fallbackVillage || world.villagesByCoord.get(key) || villageFromCoordKey(key);
+      if (village) highlightVillage(village, type);
     }
 
     function villageFromCoordKey(key) {
@@ -977,17 +1193,93 @@
       return match ? { x: Number(match[1]), y: Number(match[2]) } : null;
     }
 
-    function highlightVillage(village, color) {
+    function highlightVillage(village, type) {
       const element = getMapVillageElement(village);
       if (!element) return;
-      element.style.boxSizing = "border-box";
-      element.style.boxShadow = `inset 0 0 0 4px ${color}, 0 0 0 1px rgba(0,0,0,.55)`;
-      highlightedElements.add(element);
+      element.style.boxShadow = "";
+      const rect = element.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) return;
+      const marker = documentRef.createElement("div");
+      marker.className = `sfb-map-marker sfb-map-marker-${type}`;
+      marker.style.setProperty("--sfb-color", COLORS[type]);
+      marker.style.left = `${rect.left + rect.width / 2}px`;
+      marker.style.top = `${rect.top + rect.height / 2}px`;
+      marker.title = `${coordKey(village)} ${type}`;
+      ensureMarkerLayer().appendChild(marker);
+      highlightedMarkers.add(marker);
     }
 
     function clearHighlights() {
-      for (const element of highlightedElements) element.style.boxShadow = "";
-      highlightedElements = new Set();
+      for (const marker of highlightedMarkers) marker.remove();
+      for (const layer of overviewLayers) layer.remove();
+      highlightedMarkers = new Set();
+      overviewLayers = new Set();
+    }
+
+    function ensureMarkerLayer() {
+      if (markerLayer && markerLayer.isConnected) return markerLayer;
+      markerLayer = documentRef.createElement("div");
+      markerLayer.id = "safe-fakes-builder-map-markers";
+      documentRef.body.appendChild(markerLayer);
+      return markerLayer;
+    }
+
+    function highlightOverviewMaps(markers) {
+      for (const container of getOverviewContainers()) {
+        const layer = documentRef.createElement("div");
+        layer.className = "sfb-overview-marker-layer";
+        if (root.getComputedStyle && root.getComputedStyle(container).position === "static") {
+          container.style.position = "relative";
+        }
+        container.appendChild(layer);
+        overviewLayers.add(layer);
+        for (const [key, marker] of markers) {
+          const coord = villageFromCoordKey(key);
+          if (!coord) continue;
+          const dot = documentRef.createElement("span");
+          dot.className = `sfb-overview-dot sfb-overview-dot-${marker.type}`;
+          dot.style.setProperty("--sfb-color", COLORS[marker.type]);
+          positionOverviewMarker(dot, coord);
+          layer.appendChild(dot);
+        }
+      }
+    }
+
+    function getOverviewContainers() {
+      const selectors = [
+        "#map_overview",
+        "#minimap",
+        "#map_mini",
+        "#map_mini_map",
+        ".map_overview",
+        ".minimap",
+        "[id*='map_overview']",
+        "[id*='minimap']",
+        "[id*='mini_map']",
+        "[id*='overview_map']",
+      ];
+      const containers = [];
+      for (const selector of selectors) {
+        for (const element of Array.from(documentRef.querySelectorAll(selector))) {
+          const container = ["IMG", "CANVAS"].includes(element.tagName) ? element.parentElement : element;
+          if (!container || containers.includes(container)) continue;
+          if (panel && panel.contains(container)) continue;
+          if (container.offsetWidth < 50 || container.offsetHeight < 50) continue;
+          containers.push(container);
+        }
+      }
+      return containers;
+    }
+
+    function positionOverviewMarker(dot, coord) {
+      const current = root.game_data && root.game_data.village;
+      const sameContinent = current &&
+        Math.floor(Number(current.x) / 100) === Math.floor(Number(coord.x) / 100) &&
+        Math.floor(Number(current.y) / 100) === Math.floor(Number(coord.y) / 100);
+      const left = sameContinent ? Number(coord.x) % 100 : Number(coord.x) / 10;
+      const top = sameContinent ? Number(coord.y) % 100 : Number(coord.y) / 10;
+      dot.style.left = `${Math.max(0, Math.min(100, left))}%`;
+      dot.style.top = `${Math.max(0, Math.min(100, top))}%`;
     }
 
     function getMapVillageElement(village) {
@@ -1004,32 +1296,54 @@
       const style = documentRef.createElement("style");
       style.id = "safe-fakes-builder-style";
       style.textContent = `
-#safe-fakes-builder,#safe-fakes-builder-popup{position:fixed;z-index:15000;background:#f5efe0;color:#1e1a14;border:1px solid #8c7b5b;box-shadow:0 8px 24px rgba(0,0,0,.28);font:12px Arial,sans-serif}
-#safe-fakes-builder{right:12px;top:82px;width:336px;padding:10px}
-#safe-fakes-builder button,#safe-fakes-builder-popup button{font:12px Arial,sans-serif;line-height:1.2;padding:5px 7px;border:1px solid #8c7b5b;background:#fff7e8;color:#1e1a14;cursor:pointer}
-#safe-fakes-builder button:hover,#safe-fakes-builder-popup button:hover{background:#fff}
-#safe-fakes-builder button:disabled,#safe-fakes-builder-popup button:disabled{opacity:.45;cursor:not-allowed}
-.sfb-title{font-weight:700;margin-bottom:6px}
-.sfb-status{margin-bottom:8px;color:#4f4636}
+#safe-fakes-builder,#safe-fakes-builder-popup{position:fixed;z-index:15000;background:#111827;color:#f9fafb;border:1px solid #374151;border-radius:6px;box-shadow:0 12px 28px rgba(0,0,0,.4);font:12px Arial,sans-serif}
+#safe-fakes-builder{right:12px;top:82px;width:360px;max-height:calc(100vh - 96px);overflow:auto;padding:10px}
+#safe-fakes-builder button,#safe-fakes-builder-popup button{font:12px Arial,sans-serif;line-height:1.2;padding:5px 7px;border:1px solid #4b5563;border-radius:4px;background:#1f2937;color:#f9fafb;cursor:pointer}
+#safe-fakes-builder button:hover,#safe-fakes-builder-popup button:hover{background:#374151}
+#safe-fakes-builder button:disabled,#safe-fakes-builder-popup button:disabled{opacity:.38;cursor:not-allowed}
+#safe-fakes-builder-map-markers{position:fixed;inset:0;z-index:14980;pointer-events:none}
+.sfb-map-marker{position:fixed;width:28px;height:28px;transform:translate(-50%,-50%);border:3px solid var(--sfb-color);border-radius:50%;box-shadow:0 0 0 2px rgba(17,24,39,.95),0 0 14px var(--sfb-color);pointer-events:none}
+.sfb-map-marker:after{content:"";position:absolute;left:50%;top:50%;width:7px;height:7px;transform:translate(-50%,-50%);border-radius:50%;background:var(--sfb-color);box-shadow:0 0 0 1px rgba(17,24,39,.95)}
+.sfb-map-marker-exclude:before{content:"";position:absolute;left:5px;right:5px;top:11px;height:3px;background:var(--sfb-color);transform:rotate(45deg);box-shadow:0 0 0 1px rgba(17,24,39,.7)}
+.sfb-title{font-weight:700;margin-bottom:6px;font-size:13px}
+.sfb-status{margin-bottom:8px;color:#d1d5db}
 .sfb-counts{display:grid;grid-template-columns:1fr 1fr;gap:4px;margin-bottom:8px}
+.sfb-counts span,.sfb-list-group{background:#0f172a;border:1px solid #243044;border-radius:5px;padding:5px}
 .sfb-options{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:8px}
 .sfb-options label{display:flex;align-items:center;gap:5px}
-.sfb-options input[type=number]{width:64px}
-.sfb-options select{grid-column:1 / -1}
-.sfb-legend{display:flex;gap:8px;margin-bottom:8px;flex-wrap:wrap}
+.sfb-options input[type=number]{width:64px;background:#0f172a;color:#f9fafb;border:1px solid #4b5563;border-radius:4px}
+.sfb-options select{grid-column:1 / -1;background:#0f172a;color:#f9fafb;border:1px solid #4b5563;border-radius:4px;padding:4px}
+.sfb-legend{display:flex;gap:8px;margin-bottom:8px;flex-wrap:wrap;color:#d1d5db}
 .sfb-legend span{display:inline-flex;align-items:center;gap:4px}
-.sfb-legend i{width:10px;height:10px;display:inline-block;border:1px solid rgba(0,0,0,.45)}
+.sfb-legend i{width:10px;height:10px;display:inline-block;border:1px solid rgba(255,255,255,.45)}
+.sfb-mini-preview{height:96px;position:relative;overflow:hidden;margin-bottom:8px;border:1px solid #243044;border-radius:5px;background:linear-gradient(#122018,#0f172a);color:#9ca3af;display:flex;align-items:center;justify-content:center}
+.sfb-mini-dot,.sfb-overview-dot{position:absolute;width:8px;height:8px;transform:translate(-50%,-50%);border-radius:50%;background:var(--sfb-color);box-shadow:0 0 0 2px rgba(17,24,39,.95),0 0 8px var(--sfb-color);pointer-events:none}
+.sfb-mini-dot-exclude,.sfb-overview-dot-exclude{border-radius:2px}
+.sfb-overview-marker-layer{position:absolute;inset:0;z-index:10;pointer-events:none}
+.sfb-lists{display:grid;gap:6px;margin-bottom:8px}
+.sfb-details{border:1px solid #243044;border-radius:5px;background:#0b1220}
+.sfb-details summary{cursor:pointer;padding:6px 7px;font-weight:700}
+.sfb-list-group{margin:0 6px 6px}
+.sfb-list-title{font-weight:700;color:#d1d5db;margin-bottom:4px}
+.sfb-list-empty{color:#9ca3af;font-size:11px}
+.sfb-list-item{display:grid;grid-template-columns:1fr 24px;align-items:center;gap:5px;margin-top:3px}
+.sfb-list-item span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sfb-list-item button{padding:2px 5px}
 .sfb-actions{display:grid;grid-template-columns:1fr 1fr 1fr;gap:4px;margin-bottom:6px}
-.sfb-export textarea{width:100%;height:86px;box-sizing:border-box;resize:vertical;font:11px Consolas,monospace}
-#safe-fakes-builder-popup{width:330px;padding:9px}
+.sfb-export textarea{width:100%;height:86px;box-sizing:border-box;resize:vertical;font:11px Consolas,monospace;background:#0f172a;color:#f9fafb;border:1px solid #4b5563;border-radius:4px}
+#safe-fakes-builder-popup{width:340px;padding:10px}
 .sfb-popup-header{margin-bottom:8px}
-.sfb-popup-meta{margin:3px 0 5px;color:#4f4636}
-.sfb-relation{display:inline-block;padding:2px 5px;border-radius:2px;background:#ddd}
-.sfb-relation-enemy{background:#d8ecff}
-.sfb-relation-neutral{background:#eeeeee}
-.sfb-relation-barbarian{background:#e4e4e4}
-.sfb-relation-own,.sfb-relation-same_ally,.sfb-relation-partner,.sfb-relation-nap,.sfb-relation-friend,.sfb-relation-non_attackable{background:#ffd9a8}
-.sfb-button-grid{display:grid;grid-template-columns:1fr 1fr;gap:5px}
+.sfb-popup-meta{margin:3px 0 5px;color:#d1d5db}
+.sfb-popup-section{margin-top:8px}
+.sfb-popup-section-title{font-weight:700;color:#d1d5db;margin-bottom:4px}
+.sfb-relation{display:inline-block;padding:2px 5px;border-radius:3px;background:#374151}
+.sfb-relation-enemy{background:#1d4ed8}
+.sfb-relation-neutral{background:#4b5563}
+.sfb-relation-barbarian{background:#4b5563}
+.sfb-relation-own,.sfb-relation-same_ally,.sfb-relation-partner,.sfb-relation-nap,.sfb-relation-friend,.sfb-relation-non_attackable{background:#92400e}
+.sfb-button-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:5px}
+.sfb-button-target{border-color:#2563eb!important}
+.sfb-button-protect{border-color:#b91c1c!important}
 `;
       documentRef.head.appendChild(style);
     }
@@ -1072,6 +1386,9 @@
     normalizeBuilderState,
     applyVillageAction,
     classifyVillage,
+    getVillageSelectionState,
+    getVillageMarkerType,
+    removeStateItem,
     setTargetWeight,
     buildSafeFakesConfig,
     buildBookmarklet,
