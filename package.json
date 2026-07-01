@@ -1,0 +1,10 @@
+{
+  "name": "safe-fakes",
+  "version": "0.1.0",
+  "description": "Safe fake-target picker for Plemiona / Tribal Wars.",
+  "main": "SafeFakes.js",
+  "scripts": {
+    "test": "node --test"
+  },
+  "license": "MIT"
+}
